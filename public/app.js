@@ -176,6 +176,7 @@ async function api(path, options = {}) {
   const response = await fetch(path, {
     ...options,
     headers,
+    cache: options.cache || "no-store",
     credentials: "include",
     body: body && !(body instanceof FormData) ? JSON.stringify(body) : body,
   });
@@ -598,7 +599,7 @@ function imageTile(work) {
 }
 
 function imageGrid(works) {
-  return `<div class="image-grid">${(works || []).sort(newestFirst).map(imageTile).join("")}</div>`;
+  return `<div class="image-grid">${(works || []).filter((work) => !work.deleted_at).sort(newestFirst).map(imageTile).join("")}</div>`;
 }
 
 function memberMini(member) {
@@ -626,7 +627,7 @@ async function renderHome() {
     loadGalleries(),
   ]);
   const details = await Promise.all(state.galleries.slice(0, 8).map((gallery) => api(`/api/galleries/${gallery.id}`).catch(() => null)));
-  const works = details.flatMap((detail) => detail?.works || []).sort(newestFirst);
+  const works = details.flatMap((detail) => detail?.works || []).filter((work) => !work.deleted_at).sort(newestFirst);
   const feedbackWorks = works.filter((work) => work.feedback_requested && !work.feedback_dismissed);
   const unreadNotifications = (notificationsData.notifications || []).filter((notification) => !notification.read_at);
   setApp(pageShell(`

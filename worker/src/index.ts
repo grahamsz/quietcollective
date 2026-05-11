@@ -629,9 +629,26 @@ async function serializeGallery(db: D1Database, user: AppUser, gallery: GalleryR
   const pinned = await db.prepare("SELECT pinned_at FROM user_gallery_pins WHERE user_id = ? AND gallery_id = ?")
     .bind(user.id, gallery.id)
     .first<{ pinned_at: string }>();
-  const coverVersion = gallery.cover_version_id
-    ? await db.prepare("SELECT * FROM work_versions WHERE id = ?").bind(gallery.cover_version_id).first<WorkVersionRow>()
+  let coverVersion = gallery.cover_version_id
+    ? await db.prepare(
+      `SELECT work_versions.*
+       FROM work_versions
+       JOIN works ON works.id = work_versions.work_id
+       JOIN work_galleries ON work_galleries.work_id = works.id
+       WHERE work_versions.id = ? AND work_galleries.gallery_id = ? AND works.deleted_at IS NULL`,
+    ).bind(gallery.cover_version_id, gallery.id).first<WorkVersionRow>()
     : null;
+  if (!coverVersion && !gallery.cover_image_key) {
+    coverVersion = await db.prepare(
+      `SELECT work_versions.*
+       FROM works
+       JOIN work_galleries ON work_galleries.work_id = works.id
+       JOIN work_versions ON work_versions.id = works.current_version_id
+       WHERE work_galleries.gallery_id = ? AND works.deleted_at IS NULL
+       ORDER BY work_galleries.updated_at DESC, works.updated_at DESC
+       LIMIT 1`,
+    ).bind(gallery.id).first<WorkVersionRow>();
+  }
   return {
     ...gallery,
     ownership_type: gallery.whole_server_upload ? "whole_server" : gallery.ownership_type,
@@ -718,6 +735,9 @@ app.use("*", cors({
 }));
 app.use("*", async (c, next) => {
   await next();
+  if (c.req.path.startsWith("/api/") && !c.req.path.startsWith("/api/media/")) {
+    c.header("Cache-Control", "no-store");
+  }
   c.header("X-Content-Type-Options", "nosniff");
   c.header("Referrer-Policy", "no-referrer");
   c.header("X-Frame-Options", "DENY");
@@ -1645,6 +1665,7 @@ app.delete("/api/works/:id", async (c) => {
   await c.env.DB.batch([
     c.env.DB.prepare("UPDATE works SET deleted_at = ?, updated_at = ? WHERE id = ?").bind(timestamp, timestamp, c.req.param("id")),
     c.env.DB.prepare("UPDATE galleries SET updated_at = ? WHERE id IN (SELECT gallery_id FROM work_galleries WHERE work_id = ?)").bind(timestamp, c.req.param("id")),
+    c.env.DB.prepare("DELETE FROM work_galleries WHERE work_id = ?").bind(c.req.param("id")),
   ]);
   await insertEvent(c.env, "work.updated", currentUser(c).id, "work", c.req.param("id"), null, null, { deleted: true });
   return c.json({ ok: true });
