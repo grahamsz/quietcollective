@@ -1,0 +1,748 @@
+openapi: 3.1.0
+info:
+  title: QuietCollective API
+  version: 0.1.0
+  license:
+    name: AGPL-3.0-or-later
+    url: https://www.gnu.org/licenses/agpl-3.0.html
+  description: |
+    REST API for QuietCollective, a private gallery, critique, and collaboration
+    platform for small artist communities.
+
+    Uploaded artwork, files, critique, and other user content remain owned by
+    the uploader or the applicable rights holder. API access does not transfer
+    ownership or licensing of uploaded content.
+servers:
+  - url: https://example.com
+    description: Replace with your own QuietCollective instance origin.
+
+security:
+  - bearerAuth: []
+
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+    cookieAuth:
+      type: apiKey
+      in: cookie
+      name: qc_session
+
+  schemas:
+    Error:
+      type: object
+      required: [error]
+      properties:
+        error:
+          type: string
+
+    User:
+      type: object
+      required: [id, email, role, handle, medium_tags, created_at, updated_at]
+      properties:
+        id:
+          type: string
+          description: ULID
+        email:
+          type: string
+          format: email
+        role:
+          type: string
+          enum: [admin, member]
+        disabled_at:
+          type: [string, "null"]
+          format: date-time
+        display_name:
+          type: string
+          description: Compatibility alias; QuietCollective uses handle as the display label.
+        handle:
+          type: string
+        bio:
+          type: string
+        links:
+          type: array
+          items:
+            type: object
+        medium_tags:
+          type: array
+          items:
+            type: string
+        profile_image_url:
+          type: [string, "null"]
+        avatar_url:
+          type: [string, "null"]
+        avatar_crop:
+          type: [object, "null"]
+        last_active_at:
+          type: [string, "null"]
+          format: date-time
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+
+    Gallery:
+      type: object
+      required: [id, owner_user_id, ownership_type, visibility, title, created_at, updated_at]
+      properties:
+        id:
+          type: string
+        owner_user_id:
+          type: string
+        ownership_type:
+          type: string
+          enum: [self, collaborative, whole_server]
+        visibility:
+          type: string
+          enum: [private, server_public]
+          description: server_public means visible to logged-in instance members, never anonymous public web access.
+        title:
+          type: string
+        description:
+          type: string
+        cover_image_url:
+          type: [string, "null"]
+        capabilities:
+          $ref: "#/components/schemas/Capabilities"
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+
+    Capabilities:
+      type: object
+      required: [view, edit, upload_work, comment, manage_collaborators]
+      properties:
+        view:
+          type: boolean
+        edit:
+          type: boolean
+        upload_work:
+          type: boolean
+        comment:
+          type: boolean
+        manage_collaborators:
+          type: boolean
+
+    Work:
+      type: object
+      required: [id, title, description, type, created_by, created_at, updated_at]
+      properties:
+        id:
+          type: string
+        gallery_id:
+          type: string
+        type:
+          type: string
+          enum: [image]
+        title:
+          type: string
+        description:
+          type: string
+        feedback_requested:
+          type: boolean
+          description: UI signal only; it does not broaden access.
+        current_version:
+          anyOf:
+            - $ref: "#/components/schemas/WorkVersion"
+            - type: "null"
+        galleries:
+          type: array
+          items:
+            $ref: "#/components/schemas/Gallery"
+        reactions:
+          $ref: "#/components/schemas/ReactionSummary"
+        capabilities:
+          $ref: "#/components/schemas/Capabilities"
+        created_by:
+          type: string
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+
+    WorkVersion:
+      type: object
+      required: [id, work_id, version_number, created_by, created_at]
+      properties:
+        id:
+          type: string
+        work_id:
+          type: string
+        version_number:
+          type: integer
+        original_url:
+          type: [string, "null"]
+          description: Authenticated signed Worker URL for the private original.
+        preview_url:
+          type: [string, "null"]
+        thumbnail_url:
+          type: [string, "null"]
+        original_filename:
+          type: [string, "null"]
+        created_by:
+          type: string
+        created_at:
+          type: string
+          format: date-time
+
+    Comment:
+      type: object
+      required: [id, target_type, target_id, author_id, body, created_at, updated_at]
+      properties:
+        id:
+          type: string
+        target_type:
+          type: string
+          enum: [profile, gallery, work, version, comment]
+        target_id:
+          type: string
+        parent_comment_id:
+          type: [string, "null"]
+        author_id:
+          type: string
+        handle:
+          type: string
+        body:
+          type: string
+        reactions:
+          $ref: "#/components/schemas/ReactionSummary"
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+
+    ReactionSummary:
+      type: object
+      required: [heart_count, hearted_by_me]
+      properties:
+        heart_count:
+          type: integer
+        hearted_by_me:
+          type: boolean
+
+    Notification:
+      type: object
+      required: [id, event_id, type, body, created_at]
+      properties:
+        id:
+          type: string
+        event_id:
+          type: string
+        type:
+          type: string
+        body:
+          type: string
+        summary:
+          type: string
+        href:
+          type: [string, "null"]
+        thumbnail_url:
+          type: [string, "null"]
+        read_at:
+          type: [string, "null"]
+          format: date-time
+        created_at:
+          type: string
+          format: date-time
+
+    Invite:
+      type: object
+      required: [id, role_on_join, max_uses, use_count, created_at]
+      properties:
+        id:
+          type: string
+        role_on_join:
+          type: string
+          enum: [admin, member]
+        max_uses:
+          type: integer
+        use_count:
+          type: integer
+        expires_at:
+          type: [string, "null"]
+          format: date-time
+        revoked_at:
+          type: [string, "null"]
+          format: date-time
+        url:
+          type: string
+          description: Present only when an invite is first created; raw invite tokens are not stored.
+
+  responses:
+    Unauthorized:
+      description: Missing or invalid session.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+    Forbidden:
+      description: Authenticated user lacks the required capability.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+    NotFound:
+      description: Resource not found or not visible to the caller.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+
+paths:
+  /api/health:
+    get:
+      security: []
+      summary: Health check
+      responses:
+        "200":
+          description: Worker is healthy.
+
+  /api/setup/status:
+    get:
+      security: []
+      summary: Bootstrap setup state
+      responses:
+        "200":
+          description: Setup status and public instance metadata.
+
+  /api/setup/admin:
+    post:
+      security: []
+      summary: Create the first admin
+      description: Enabled only while no admin exists. Requires ADMIN_SETUP_TOKEN.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [token, email, handle, password]
+              properties:
+                token:
+                  type: string
+                email:
+                  type: string
+                  format: email
+                handle:
+                  type: string
+                password:
+                  type: string
+                  minLength: 10
+      responses:
+        "201":
+          description: Admin created.
+        "403":
+          $ref: "#/components/responses/Forbidden"
+
+  /api/auth/login:
+    post:
+      security: []
+      summary: Log in
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [email, password]
+              properties:
+                email:
+                  type: string
+                  format: email
+                password:
+                  type: string
+      responses:
+        "200":
+          description: Token and current user.
+
+  /api/auth/me:
+    get:
+      summary: Current user
+      responses:
+        "200":
+          description: User and instance metadata.
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+
+  /api/auth/logout:
+    post:
+      summary: Clear session cookie
+      responses:
+        "200":
+          description: Logged out.
+
+  /api/admin/invites:
+    get:
+      summary: List invites
+      description: Admin only.
+      responses:
+        "200":
+          description: Invite list.
+    post:
+      summary: Create invite
+      description: Admin only. The response contains the raw invite token once.
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                max_uses:
+                  type: integer
+                  minimum: 1
+                expires_at:
+                  type: string
+                  format: date-time
+                role_on_join:
+                  type: string
+                  enum: [admin, member]
+      responses:
+        "201":
+          description: Invite created.
+
+  /api/admin/invites/{id}/revoke:
+    post:
+      summary: Revoke invite
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Invite revoked.
+
+  /api/invites/{token}:
+    get:
+      security: []
+      summary: Inspect invite
+      parameters:
+        - name: token
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Invite metadata.
+        "404":
+          $ref: "#/components/responses/NotFound"
+
+  /api/invites/{token}/accept:
+    post:
+      security: []
+      summary: Accept invite
+      parameters:
+        - name: token
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [email, handle, password]
+              properties:
+                email:
+                  type: string
+                  format: email
+                handle:
+                  type: string
+                password:
+                  type: string
+                  minLength: 10
+      responses:
+        "201":
+          description: Account created and session returned.
+        "409":
+          description: Email or handle already exists.
+
+  /api/members:
+    get:
+      summary: List visible members
+      responses:
+        "200":
+          description: Members.
+
+  /api/users/{handle}:
+    get:
+      summary: Member profile by handle
+      parameters:
+        - name: handle
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Member profile.
+
+  /api/users/me:
+    patch:
+      summary: Update current profile
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                handle:
+                  type: string
+                bio:
+                  type: string
+                links:
+                  type: array
+                  items:
+                    type: object
+      responses:
+        "200":
+          description: Updated user.
+
+  /api/galleries:
+    get:
+      summary: List visible galleries
+      responses:
+        "200":
+          description: Visible galleries.
+    post:
+      summary: Create gallery
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [title]
+              properties:
+                title:
+                  type: string
+                description:
+                  type: string
+                ownership_type:
+                  type: string
+                  enum: [self, collaborative, whole_server]
+                visibility:
+                  type: string
+                  enum: [private, server_public]
+      responses:
+        "201":
+          description: Gallery created.
+
+  /api/galleries/{id}:
+    get:
+      summary: Gallery detail
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Gallery, members, and works.
+    patch:
+      summary: Update gallery settings
+      responses:
+        "200":
+          description: Updated gallery.
+    delete:
+      summary: Delete gallery
+      responses:
+        "200":
+          description: Deleted.
+
+  /api/galleries/{galleryId}/works:
+    post:
+      summary: Upload an image work
+      description: Multipart upload. Originals remain private; preview and thumbnail variants are served through signed Worker URLs.
+      parameters:
+        - name: galleryId
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              required: [file]
+              properties:
+                file:
+                  type: string
+                  format: binary
+                preview:
+                  type: string
+                  format: binary
+                thumbnail:
+                  type: string
+                  format: binary
+                title:
+                  type: string
+                description:
+                  type: string
+                collaborators_json:
+                  type: string
+                client_upload_key:
+                  type: string
+      responses:
+        "201":
+          description: Work created.
+
+  /api/works/{id}:
+    get:
+      summary: Work detail
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Work, versions, and collaborators.
+    patch:
+      summary: Update work
+      responses:
+        "200":
+          description: Updated work.
+    delete:
+      summary: Soft-delete work
+      responses:
+        "200":
+          description: Work hidden from feeds.
+
+  /api/works/{id}/versions:
+    post:
+      summary: Upload a new image version
+      requestBody:
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              required: [file]
+              properties:
+                file:
+                  type: string
+                  format: binary
+                preview:
+                  type: string
+                  format: binary
+                thumbnail:
+                  type: string
+                  format: binary
+      responses:
+        "201":
+          description: Version created.
+
+  /api/comments:
+    get:
+      summary: List comments for a visible target
+      parameters:
+        - name: target_type
+          in: query
+          required: true
+          schema:
+            type: string
+            enum: [profile, gallery, work, version, comment]
+        - name: target_id
+          in: query
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Comments.
+    post:
+      summary: Create comment
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [target_type, target_id, body]
+              properties:
+                target_type:
+                  type: string
+                target_id:
+                  type: string
+                parent_comment_id:
+                  type: string
+                body:
+                  type: string
+      responses:
+        "201":
+          description: Comment created.
+
+  /api/activity:
+    get:
+      summary: Recent visible activity
+      responses:
+        "200":
+          description: Events visible to the current member.
+
+  /api/notifications:
+    get:
+      summary: Current user's notifications
+      responses:
+        "200":
+          description: Notifications with hydrated activity summary fields.
+
+  /api/notifications/{id}/read:
+    post:
+      summary: Mark notification read
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Marked read.
+
+  /api/notifications/read-all:
+    post:
+      summary: Mark all notifications read
+      responses:
+        "200":
+          description: Marked read.
+
+  /api/exports/me:
+    get:
+      summary: List my exports
+      responses:
+        "200":
+          description: Export jobs.
+    post:
+      summary: Create export job
+      responses:
+        "201":
+          description: Export requested.
+
+  /api/exports/{id}:
+    get:
+      summary: Open export manifest
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Export manifest JSON.

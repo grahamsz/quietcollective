@@ -8,6 +8,9 @@ const requiredFiles = [
   "public/vendor/easymde/easymde.min.css",
   "public/vendor/easymde/easymde.min.js",
   "public/manifest.webmanifest",
+  "public/api/openapi.yaml",
+  "public/developers.html",
+  "public/developers/index.html",
 ];
 
 for (const file of requiredFiles) {

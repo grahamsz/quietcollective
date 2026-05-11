@@ -91,8 +91,13 @@ Use `--dry-run` first to see which image versions will be touched. If you deploy
 npm run web:dev
 npm run web:build
 npm run worker:typecheck
+npm run test:security
 npm run verify
 npm run media:backfill:webp -- --dry-run
 npm run d1:migrations:apply
 npm run d1:migrations:apply:remote
 ```
+
+## API Documentation
+
+Interactive API documentation is available from the static app at `/developers/` or `/developers.html`. The Redoc page renders `public/api/openapi.yaml`.

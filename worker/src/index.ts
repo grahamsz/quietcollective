@@ -849,6 +849,8 @@ app.use("*", async (c, next) => {
 
 app.get("/api/health", (c) => c.json({ ok: true, service: "quietcollective" }));
 
+app.get("/api/openapi.yaml", async (c) => c.env.ASSETS.fetch(c.req.raw));
+
 app.get("/api/setup/status", async (c) => {
   const count = await adminCount(c.env.DB);
   const instance = await instanceInfo(c.env);
@@ -1974,23 +1976,33 @@ app.post("/api/comments", async (c) => {
 app.get("/api/comments", async (c) => {
   const targetType = stringField(c.req.query("target_type") || c.req.query("targetType"));
   const targetId = stringField(c.req.query("target_id") || c.req.query("targetId"));
+  if (!targetType || !targetId) return c.json({ error: "target_type and target_id are required" }, 400);
   if (!(await canViewTarget(c.env.DB, currentUser(c), targetType, targetId))) return c.json({ error: "Forbidden" }, 403);
   const rows = await c.env.DB.prepare(
     `SELECT comments.*, users.display_name, users.handle,
             parent_comments.body AS parent_body,
             parent_users.display_name AS parent_display_name,
-            parent_users.handle AS parent_handle
+            parent_users.handle AS parent_handle,
+            COUNT(reactions.id) AS heart_count,
+            MAX(CASE WHEN reactions.user_id = ? THEN 1 ELSE 0 END) AS hearted_by_me
      FROM comments
      JOIN users ON users.id = comments.author_id
      LEFT JOIN comments AS parent_comments ON parent_comments.id = comments.parent_comment_id AND parent_comments.deleted_at IS NULL
      LEFT JOIN users AS parent_users ON parent_users.id = parent_comments.author_id
-     WHERE target_type = ? AND target_id = ? AND comments.deleted_at IS NULL
+     LEFT JOIN reactions ON reactions.target_type = 'comment'
+       AND reactions.target_id = comments.id
+       AND reactions.reaction = 'heart'
+     WHERE comments.target_type = ? AND comments.target_id = ? AND comments.deleted_at IS NULL
+     GROUP BY comments.id
      ORDER BY comments.created_at ASC`,
-  ).bind(targetType, targetId).all();
-  const comments = [];
-  for (const comment of rows.results as Array<{ id: string }>) {
-    comments.push({ ...comment, reactions: await reactionSummary(c.env.DB, currentUser(c), "comment", comment.id) });
-  }
+  ).bind(currentUser(c).id, targetType, targetId).all<Record<string, unknown> & { heart_count: number; hearted_by_me: number | null }>();
+  const comments = rows.results.map((comment) => ({
+    ...comment,
+    reactions: {
+      heart_count: comment.heart_count || 0,
+      hearted_by_me: !!comment.hearted_by_me,
+    },
+  }));
   return c.json({ comments });
 });
 
@@ -2292,6 +2304,94 @@ type ActivityJoinedRow = ActivityRow & {
   comment_target_profile_handle: string | null;
 };
 
+type NotificationActivityJoinedRow = ActivityJoinedRow & {
+  notification_id: string;
+  notification_event_id: string;
+  notification_type: string;
+  notification_body: string;
+  notification_read_at: string | null;
+  notification_created_at: string;
+};
+
+const ACTIVITY_CONTEXT_SELECT = `
+     SELECT recent.*,
+            actor.handle AS actor_handle,
+            target_profile.handle AS target_profile_handle,
+            subject_gallery.title AS subject_gallery_title,
+            subject_gallery_cover.work_id AS subject_gallery_thumb_work_id,
+            subject_gallery_cover.id AS subject_gallery_thumb_version_id,
+            subject_gallery_cover.thumbnail_r2_key AS subject_gallery_thumb_key,
+            subject_gallery_cover.thumbnail_content_type AS subject_gallery_thumb_type,
+            subject_work.id AS subject_work_id,
+            subject_work.title AS subject_work_title,
+            subject_work_version.id AS subject_work_thumb_version_id,
+            subject_work_version.thumbnail_r2_key AS subject_work_thumb_key,
+            subject_work_version.thumbnail_content_type AS subject_work_thumb_type,
+            target_gallery.title AS target_gallery_title,
+            target_work.id AS target_work_id,
+            target_work.title AS target_work_title,
+            target_work_version.id AS target_work_thumb_version_id,
+            target_work_version.thumbnail_r2_key AS target_work_thumb_key,
+            target_work_version.thumbnail_content_type AS target_work_thumb_type,
+            target_version.id AS target_version_id,
+            target_version.work_id AS target_version_work_id,
+            target_version_work.title AS target_version_work_title,
+            target_version.thumbnail_r2_key AS target_version_thumb_key,
+            target_version.thumbnail_content_type AS target_version_thumb_type,
+            target_comment.body AS target_comment_body,
+            target_comment.target_type AS target_comment_target_type,
+            target_comment.target_id AS target_comment_target_id,
+            comment_target_work.id AS comment_target_work_id,
+            comment_target_work.title AS comment_target_work_title,
+            comment_target_work_version.id AS comment_target_work_thumb_version_id,
+            comment_target_work_version.thumbnail_r2_key AS comment_target_work_thumb_key,
+            comment_target_work_version.thumbnail_content_type AS comment_target_work_thumb_type,
+            comment_target_gallery.title AS comment_target_gallery_title,
+            comment_target_version.id AS comment_target_version_id,
+            comment_target_version.work_id AS comment_target_version_work_id,
+            comment_target_version_work.title AS comment_target_version_work_title,
+            comment_target_version.thumbnail_r2_key AS comment_target_version_thumb_key,
+            comment_target_version.thumbnail_content_type AS comment_target_version_thumb_type,
+            comment_target_profile.handle AS comment_target_profile_handle
+     FROM recent
+     LEFT JOIN users AS actor ON actor.id = recent.actor_id
+     LEFT JOIN users AS target_profile ON recent.target_type = 'profile'
+       AND target_profile.id = recent.target_id
+       AND target_profile.disabled_at IS NULL
+     LEFT JOIN galleries AS subject_gallery ON recent.subject_type = 'gallery'
+       AND subject_gallery.id = recent.subject_id
+     LEFT JOIN work_versions AS subject_gallery_cover ON subject_gallery_cover.id = subject_gallery.cover_version_id
+     LEFT JOIN works AS subject_work ON recent.subject_type = 'work'
+       AND subject_work.id = recent.subject_id
+       AND subject_work.deleted_at IS NULL
+     LEFT JOIN work_versions AS subject_work_version ON subject_work_version.id = subject_work.current_version_id
+     LEFT JOIN galleries AS target_gallery ON recent.target_type = 'gallery'
+       AND target_gallery.id = recent.target_id
+     LEFT JOIN works AS target_work ON recent.target_type = 'work'
+       AND target_work.id = recent.target_id
+       AND target_work.deleted_at IS NULL
+     LEFT JOIN work_versions AS target_work_version ON target_work_version.id = target_work.current_version_id
+     LEFT JOIN work_versions AS target_version ON recent.target_type = 'version'
+       AND target_version.id = recent.target_id
+     LEFT JOIN works AS target_version_work ON target_version_work.id = target_version.work_id
+       AND target_version_work.deleted_at IS NULL
+     LEFT JOIN comments AS target_comment ON recent.target_type = 'comment'
+       AND target_comment.id = recent.target_id
+       AND target_comment.deleted_at IS NULL
+     LEFT JOIN works AS comment_target_work ON target_comment.target_type = 'work'
+       AND comment_target_work.id = target_comment.target_id
+       AND comment_target_work.deleted_at IS NULL
+     LEFT JOIN work_versions AS comment_target_work_version ON comment_target_work_version.id = comment_target_work.current_version_id
+     LEFT JOIN galleries AS comment_target_gallery ON target_comment.target_type = 'gallery'
+       AND comment_target_gallery.id = target_comment.target_id
+     LEFT JOIN work_versions AS comment_target_version ON target_comment.target_type = 'version'
+       AND comment_target_version.id = target_comment.target_id
+     LEFT JOIN works AS comment_target_version_work ON comment_target_version_work.id = comment_target_version.work_id
+       AND comment_target_version_work.deleted_at IS NULL
+     LEFT JOIN users AS comment_target_profile ON target_comment.target_type = 'profile'
+       AND comment_target_profile.id = target_comment.target_id
+       AND comment_target_profile.disabled_at IS NULL`;
+
 function addId(ids: Set<string>, value: string | null | undefined) {
   if (value) ids.add(value);
 }
@@ -2521,83 +2621,7 @@ app.get("/api/activity", async (c) => {
     `WITH recent AS (
        SELECT * FROM domain_events ORDER BY created_at DESC LIMIT 120
      )
-     SELECT recent.*,
-            actor.handle AS actor_handle,
-            target_profile.handle AS target_profile_handle,
-            subject_gallery.title AS subject_gallery_title,
-            subject_gallery_cover.work_id AS subject_gallery_thumb_work_id,
-            subject_gallery_cover.id AS subject_gallery_thumb_version_id,
-            subject_gallery_cover.thumbnail_r2_key AS subject_gallery_thumb_key,
-            subject_gallery_cover.thumbnail_content_type AS subject_gallery_thumb_type,
-            subject_work.id AS subject_work_id,
-            subject_work.title AS subject_work_title,
-            subject_work_version.id AS subject_work_thumb_version_id,
-            subject_work_version.thumbnail_r2_key AS subject_work_thumb_key,
-            subject_work_version.thumbnail_content_type AS subject_work_thumb_type,
-            target_gallery.title AS target_gallery_title,
-            target_work.id AS target_work_id,
-            target_work.title AS target_work_title,
-            target_work_version.id AS target_work_thumb_version_id,
-            target_work_version.thumbnail_r2_key AS target_work_thumb_key,
-            target_work_version.thumbnail_content_type AS target_work_thumb_type,
-            target_version.id AS target_version_id,
-            target_version.work_id AS target_version_work_id,
-            target_version_work.title AS target_version_work_title,
-            target_version.thumbnail_r2_key AS target_version_thumb_key,
-            target_version.thumbnail_content_type AS target_version_thumb_type,
-            target_comment.body AS target_comment_body,
-            target_comment.target_type AS target_comment_target_type,
-            target_comment.target_id AS target_comment_target_id,
-            comment_target_work.id AS comment_target_work_id,
-            comment_target_work.title AS comment_target_work_title,
-            comment_target_work_version.id AS comment_target_work_thumb_version_id,
-            comment_target_work_version.thumbnail_r2_key AS comment_target_work_thumb_key,
-            comment_target_work_version.thumbnail_content_type AS comment_target_work_thumb_type,
-            comment_target_gallery.title AS comment_target_gallery_title,
-            comment_target_version.id AS comment_target_version_id,
-            comment_target_version.work_id AS comment_target_version_work_id,
-            comment_target_version_work.title AS comment_target_version_work_title,
-            comment_target_version.thumbnail_r2_key AS comment_target_version_thumb_key,
-            comment_target_version.thumbnail_content_type AS comment_target_version_thumb_type,
-            comment_target_profile.handle AS comment_target_profile_handle
-     FROM recent
-     LEFT JOIN users AS actor ON actor.id = recent.actor_id
-     LEFT JOIN users AS target_profile ON recent.target_type = 'profile'
-       AND target_profile.id = recent.target_id
-       AND target_profile.disabled_at IS NULL
-     LEFT JOIN galleries AS subject_gallery ON recent.subject_type = 'gallery'
-       AND subject_gallery.id = recent.subject_id
-     LEFT JOIN work_versions AS subject_gallery_cover ON subject_gallery_cover.id = subject_gallery.cover_version_id
-     LEFT JOIN works AS subject_work ON recent.subject_type = 'work'
-       AND subject_work.id = recent.subject_id
-       AND subject_work.deleted_at IS NULL
-     LEFT JOIN work_versions AS subject_work_version ON subject_work_version.id = subject_work.current_version_id
-     LEFT JOIN galleries AS target_gallery ON recent.target_type = 'gallery'
-       AND target_gallery.id = recent.target_id
-     LEFT JOIN works AS target_work ON recent.target_type = 'work'
-       AND target_work.id = recent.target_id
-       AND target_work.deleted_at IS NULL
-     LEFT JOIN work_versions AS target_work_version ON target_work_version.id = target_work.current_version_id
-     LEFT JOIN work_versions AS target_version ON recent.target_type = 'version'
-       AND target_version.id = recent.target_id
-     LEFT JOIN works AS target_version_work ON target_version_work.id = target_version.work_id
-       AND target_version_work.deleted_at IS NULL
-     LEFT JOIN comments AS target_comment ON recent.target_type = 'comment'
-       AND target_comment.id = recent.target_id
-       AND target_comment.deleted_at IS NULL
-     LEFT JOIN works AS comment_target_work ON target_comment.target_type = 'work'
-       AND comment_target_work.id = target_comment.target_id
-       AND comment_target_work.deleted_at IS NULL
-     LEFT JOIN work_versions AS comment_target_work_version ON comment_target_work_version.id = comment_target_work.current_version_id
-     LEFT JOIN galleries AS comment_target_gallery ON target_comment.target_type = 'gallery'
-       AND comment_target_gallery.id = target_comment.target_id
-     LEFT JOIN work_versions AS comment_target_version ON target_comment.target_type = 'version'
-       AND comment_target_version.id = target_comment.target_id
-     LEFT JOIN works AS comment_target_version_work ON comment_target_version_work.id = comment_target_version.work_id
-       AND comment_target_version_work.deleted_at IS NULL
-     LEFT JOIN users AS comment_target_profile ON target_comment.target_type = 'profile'
-       AND comment_target_profile.id = target_comment.target_id
-       AND comment_target_profile.disabled_at IS NULL
+     ${ACTIVITY_CONTEXT_SELECT}
      ORDER BY recent.created_at DESC`,
   ).all<ActivityJoinedRow>();
   const { galleryIds, workIds } = collectActivityVisibilityIds(rows.results);
@@ -2614,56 +2638,44 @@ app.get("/api/activity", async (c) => {
 app.get("/api/notifications", async (c) => {
   const user = currentUser(c);
   const rows = await c.env.DB.prepare(
-    `SELECT notifications.*, domain_events.type AS event_type, domain_events.actor_id,
-            domain_events.subject_type, domain_events.subject_id, domain_events.target_type,
-            domain_events.target_id, domain_events.payload_json
-     FROM notifications
-     LEFT JOIN domain_events ON domain_events.id = notifications.event_id
-     WHERE notifications.user_id = ?
-     ORDER BY notifications.created_at DESC LIMIT 100`,
-  ).bind(user.id).all<{
-    id: string;
-    event_id: string;
-    type: string;
-    body: string;
-    read_at: string | null;
-    created_at: string;
-    event_type: string | null;
-    actor_id: string | null;
-    subject_type: string | null;
-    subject_id: string | null;
-    target_type: string | null;
-    target_id: string | null;
-    payload_json: string | null;
-  }>();
-  const notifications = [];
-  for (const row of rows.results) {
-    let activity = null;
-    try {
-      if (row.event_type && row.subject_type && row.subject_id) {
-        activity = await activityEntry(c.env, user, {
-          id: row.event_id,
-          type: row.event_type,
-          actor_id: row.actor_id,
-          subject_type: row.subject_type,
-          subject_id: row.subject_id,
-          target_type: row.target_type,
-          target_id: row.target_id,
-          payload_json: row.payload_json,
-          created_at: row.created_at,
-        });
-      }
-    } catch {
-      activity = null;
-    }
-    notifications.push({
-      ...row,
-      summary: activity?.summary || row.body,
+    `WITH recent AS (
+       SELECT domain_events.*,
+              notifications.id AS notification_id,
+              notifications.event_id AS notification_event_id,
+              notifications.type AS notification_type,
+              notifications.body AS notification_body,
+              notifications.read_at AS notification_read_at,
+              notifications.created_at AS notification_created_at
+       FROM notifications
+       JOIN domain_events ON domain_events.id = notifications.event_id
+       WHERE notifications.user_id = ?
+       ORDER BY notifications.created_at DESC LIMIT 100
+     )
+     ${ACTIVITY_CONTEXT_SELECT}
+     ORDER BY recent.notification_created_at DESC`,
+  ).bind(user.id).all<NotificationActivityJoinedRow>();
+  const { galleryIds, workIds } = collectActivityVisibilityIds(rows.results);
+  const [galleries, works] = await Promise.all([
+    visibleGalleryIds(c.env.DB, user, galleryIds),
+    visibleWorkIds(c.env.DB, user, workIds),
+  ]);
+  const thumbnailCache = new Map<string, Promise<string | null>>();
+  const visibleRows = rows.results.filter((row) => joinedEventVisible(user, row, galleries, works));
+  const notifications = await Promise.all(visibleRows.map(async (row) => {
+    const activity = await activityEntryFromJoinedRow(c.env, user, row, thumbnailCache).catch(() => null);
+    return {
+      id: row.notification_id,
+      event_id: row.notification_event_id,
+      type: row.notification_type,
+      body: row.notification_body,
+      read_at: row.notification_read_at,
+      created_at: row.notification_created_at,
+      summary: activity?.summary || row.notification_body,
       href: activity?.href || null,
       thumbnail_url: activity?.thumbnail_url || null,
       comment_preview: activity?.comment_preview || null,
-    });
-  }
+    };
+  }));
   return c.json({ notifications });
 });
 
