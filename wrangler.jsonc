@@ -15,7 +15,7 @@
     {
       "binding": "DB",
       "database_name": "quietcollective",
-      "database_id": "00000000-0000-0000-0000-000000000000",
+      "database_id": "7f48ab70-3f8e-4170-a7fe-a0d4c1358d16",
       "migrations_dir": "migrations"
     }
   ],
