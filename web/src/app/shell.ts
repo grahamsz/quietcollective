@@ -25,12 +25,14 @@ function visibilityHelp(value) {
     : "Private means only you, explicitly added gallery members, and admins can view it.";
 }
 
+/** Renders the site logo mark used by the sidebar and auth shell. */
 function brandMark() {
   if (state.instance.logo_url) return `<img class="brand-logo" src="${escapeHtml(state.instance.logo_url)}" alt="">`;
   return `<div class="brand-mark" aria-hidden="true">QC</div>`;
 }
 
 
+/** Wraps authenticated page views with sidebar, topbar, and shared navigation. */
 function pageShell(content, options = {}) {
   const myGalleries = state.galleries
     .filter((gallery) => gallery.owner_user_id === state.me?.id || gallery.capabilities?.upload_work)
@@ -69,6 +71,7 @@ function pageShell(content, options = {}) {
   `;
 }
 
+/** Wraps setup, login, and invite views in the unauthenticated boot screen. */
 function authPage(content) {
   return `<main class="boot-screen">${brandMark()}<section class="panel" style="width:min(520px,calc(100vw - 32px));text-align:left"><div class="panel-body">${content}<p class="rights-note" style="margin-top:18px">Uploaded user content remains owned by the uploader or rights holder. Powered by the open source <a href="${UPSTREAM_SOURCE_URL}" rel="noreferrer">QuietCollective project</a>.</p></div></section></main>`;
 }

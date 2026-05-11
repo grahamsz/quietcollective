@@ -68,6 +68,7 @@ export interface WorkRow {
   description: string;
   content_warning: string | null;
   feedback_requested: number;
+  feedback_requested_at: string | null;
   feedback_prompt: string | null;
   current_version_id: string | null;
   created_by: string;

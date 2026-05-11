@@ -148,19 +148,20 @@ async function pollNotifications(options = {}) {
     return;
   }
 
-  const previousWatermark = `${state.etag || ""}:${state.latestCreatedAt || ""}`;
+  const previousWatermark = `${state.latestCreatedAt || ""}:${Number(state.unreadCount || 0)}`;
   const data = await response.json().catch(() => ({}));
   const nextLatestCreatedAt = data.latest_created_at || state.latestCreatedAt || "";
   const nextEtag = response.headers.get("etag") || state.etag || "";
-  const nextWatermark = `${nextEtag}:${nextLatestCreatedAt}`;
-  const notificationsChanged = nextWatermark !== previousWatermark || Number(data.unread_count || 0) > 0;
+  const nextUnreadCount = Number(data.unread_count || 0);
+  const nextWatermark = `${nextLatestCreatedAt}:${nextUnreadCount}`;
+  const notificationsChanged = nextWatermark !== previousWatermark;
   const nextState = {
     ...state,
     etag: nextEtag,
     latestCreatedAt: nextLatestCreatedAt,
     lastPollAt: timestamp,
     lastUsedAt: notificationsChanged ? timestamp : state.lastUsedAt,
-    unreadCount: Number(data.unread_count || 0),
+    unreadCount: nextUnreadCount,
   };
 
   if (!options.suppressExisting && self.Notification?.permission === "granted") {

@@ -3,6 +3,7 @@ type ProtectedImageProps = {
   alt?: string;
 };
 
+/** Renders permission-gated media inside Preact work and gallery components. */
 export function ProtectedImage({ src, alt = "" }: ProtectedImageProps) {
   return (
     <>

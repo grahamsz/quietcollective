@@ -4,9 +4,13 @@ import { button } from "../components/ui";
 import { encodePath, escapeHtml } from "../lib/utils";
 import { api, loadNotificationStatus } from "./api";
 import { field } from "./forms";
-import { renderRoute } from "./routing";
+import { navigate, renderRoute } from "./routing";
+import { disableBrowserNotifications, enableBrowserNotifications, notificationBrowserToggle, notificationMenuEmpty, notificationMenuLoading } from "./notifications";
 import { toast } from "./toast";
 
+let notificationOutsideBound = false;
+
+/** Renders the heart reaction button used by work and comment components. */
 function reactionButton(targetType, targetId, reactions = {}) {
   const count = reactions.heart_count || 0;
   const label = reactions.hearted_by_me ? "Remove heart" : "Heart";
@@ -38,6 +42,7 @@ function bindReactionButtons() {
 }
 
 function bindNotificationActions() {
+  bindNotificationMenu();
   document.querySelector("[data-notifications-read-all]")?.addEventListener("click", async () => {
     await api("/api/notifications/read-all", { method: "POST" }).catch((error) => toast(error.message, "error"));
     await loadNotificationStatus();
@@ -50,6 +55,107 @@ function bindNotificationActions() {
       renderRoute();
     });
   });
+  document.querySelectorAll("[data-notification-item]").forEach((control) => {
+    control.addEventListener("click", handleNotificationItemClick);
+  });
+}
+
+function renderNotificationMenuItems(notifications) {
+  const rows = (notifications || []).slice(0, 12).map((notification) => {
+    const href = notification.href || "";
+    const tag = href ? "a" : "button";
+    const hrefAttr = href ? ` href="${escapeHtml(href)}"` : "";
+    const unread = notification.read_at ? "" : " is-unread";
+    const thumb = notification.thumbnail_url ? `<img class="notification-menu-thumb" src="${escapeHtml(notification.thumbnail_url)}" alt="">` : "";
+    const thumbClass = thumb ? "" : " no-thumb";
+    return `<${tag}${hrefAttr} class="notification-menu-item${unread}${thumbClass}" data-notification-item data-notification-id="${escapeHtml(notification.id)}" data-notification-href="${escapeHtml(href)}" ${href ? "" : 'type="button"'}>${thumb}<span><strong>${escapeHtml(notification.summary || notification.body || "Notification")}</strong>${notification.comment_preview ? `<small>${escapeHtml(notification.comment_preview.replace(/\s+/g, " ").slice(0, 160))}</small>` : ""}</span></${tag}>`;
+  }).join("");
+  return rows || notificationMenuEmpty();
+}
+
+async function openNotificationMenu(root) {
+  const bell = root.querySelector("[data-notification-bell]");
+  const menu = root.querySelector("[data-notification-popdown]");
+  const body = menu?.querySelector(".notification-popdown-body");
+  if (!menu || !body) return;
+  root.classList.add("is-open");
+  bell?.setAttribute("aria-expanded", "true");
+  menu.hidden = false;
+  body.innerHTML = notificationMenuLoading();
+  menu.querySelector(".notification-popdown-foot")?.remove();
+  menu.insertAdjacentHTML("beforeend", notificationBrowserToggle());
+  menu.querySelector("[data-browser-notifications-toggle]")?.addEventListener("click", handleBrowserNotificationsToggle);
+  try {
+    const data = await api("/api/notifications");
+    body.innerHTML = renderNotificationMenuItems(data.notifications || []);
+    body.querySelectorAll("[data-notification-item]").forEach((control) => {
+      control.addEventListener("click", handleNotificationItemClick);
+    });
+  } catch (error) {
+    body.innerHTML = `<div class="notification-menu-empty">${escapeHtml(error.message || "Could not load notifications.")}</div>`;
+  }
+}
+
+function closeNotificationMenu(root) {
+  const menu = root.querySelector("[data-notification-popdown]");
+  const bell = root.querySelector("[data-notification-bell]");
+  root.classList.remove("is-open");
+  bell?.setAttribute("aria-expanded", "false");
+  if (menu) menu.hidden = true;
+}
+
+function bindNotificationMenu() {
+  document.querySelectorAll("[data-notification-menu-root]").forEach((root) => {
+    const bell = root.querySelector("[data-notification-bell]");
+    if (!bell || bell.dataset.bound === "true") return;
+    bell.dataset.bound = "true";
+    bell.addEventListener("click", async (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      if (root.classList.contains("is-open")) {
+        closeNotificationMenu(root);
+        return;
+      }
+      await openNotificationMenu(root);
+    });
+  });
+  if (!notificationOutsideBound) {
+    notificationOutsideBound = true;
+    document.addEventListener("click", (event) => {
+      document.querySelectorAll("[data-notification-menu-root].is-open").forEach((root) => {
+        if (!root.contains(event.target)) closeNotificationMenu(root);
+      });
+    });
+    document.addEventListener("keydown", (event) => {
+      if (event.key !== "Escape") return;
+      document.querySelectorAll("[data-notification-menu-root].is-open").forEach(closeNotificationMenu);
+    });
+  }
+}
+
+async function handleNotificationItemClick(event) {
+  const control = event.currentTarget;
+  const href = control.dataset.notificationHref || control.getAttribute("href") || "";
+  event.preventDefault();
+  event.stopPropagation();
+  try {
+    const notificationId = control.dataset.notificationId;
+    if (notificationId) {
+      await api(`/api/notifications/${encodePath(notificationId)}/read`, { method: "POST" });
+    }
+    control.classList.remove("is-unread");
+    await loadNotificationStatus();
+    if (href?.startsWith("/")) navigate(href);
+    else if (href) window.location.href = href;
+  } catch (error) {
+    toast(error.message, "error");
+  }
+}
+
+async function handleBrowserNotificationsToggle(event) {
+  const action = event.currentTarget.dataset.browserNotificationsToggle;
+  if (action === "enable") await enableBrowserNotifications();
+  if (action === "disable") await disableBrowserNotifications();
 }
 
 function bindReplyButtons() {

@@ -5,15 +5,18 @@ function workRoleLabels() {
   return [...new Set([...(state.roleSuggestions || []).map((role) => role.label), ...DEFAULT_WORK_ROLES].filter(Boolean))].sort((a, b) => a.localeCompare(b));
 }
 
+/** Renders the collaborator role suggestion list used by upload and work edit forms. */
 function roleDatalist(id = "work-role-options") {
   return `<datalist id="${escapeHtml(id)}">${workRoleLabels().map((role) => `<option value="${escapeHtml(role)}"></option>`).join("")}</datalist>`;
 }
 
+/** Renders a linked or plain collaborator name used by work detail and edit views. */
 function collaboratorLabel(collab) {
   if (collab.linked_handle) return `<a href="/members/${encodePath(collab.linked_handle)}" data-link>@${escapeHtml(collab.linked_handle)}</a>`;
   return escapeHtml(collab.display_name || "collaborator");
 }
 
+/** Renders collaborator credit input rows used by upload and work edit forms. */
 function collaboratorCreditRows(options = {}) {
   const listId = options.listId || "work-role-options";
   const rows = options.rows || 1;

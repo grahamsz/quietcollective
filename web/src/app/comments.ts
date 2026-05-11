@@ -1,10 +1,12 @@
 // @ts-nocheck
 import { api, bindProtectedMedia, button, empty, escapeHtml, field, iconButton, markdownHint, panel, protectedImage, reactionButton, renderMarkdown, renderMarkdownInline, renderRoute, relativeTime, stripMarkdownImages, syncMarkdownEditors, toast } from "./core";
 
+/** Picks the display author for comment cards used across work, gallery, and profile pages. */
 function commentAuthor(comment) {
   return comment.handle || comment.display_name || "member";
 }
 
+/** Renders the quoted parent comment context shown above replies. */
 function commentReplyContext(comment) {
   if (!comment.parent_comment_id) return "";
   const author = comment.parent_handle || comment.parent_display_name || "member";
@@ -13,6 +15,7 @@ function commentReplyContext(comment) {
   return `<div class="reply-context"><span>Replying to @${escapeHtml(author)}</span>${clipped ? `<p>${renderMarkdownInline(clipped)}</p>` : ""}</div>`;
 }
 
+/** Renders one comment card used in comment panels and tag comment search results. */
 function commentArticle(comment, options = {}) {
   const author = commentAuthor(comment);
   const replyButton = options.replyButton !== false;
@@ -20,10 +23,12 @@ function commentArticle(comment, options = {}) {
   return `<article class="comment-card${comment.parent_comment_id ? " is-reply" : ""}"><div class="meta-row"><strong>@${escapeHtml(author)}</strong><span>${escapeHtml(relativeTime(comment.created_at))}</span>${metaExtras}</div>${commentReplyContext(comment)}<div class="description markdown-body">${renderMarkdown(comment.body)}</div><div class="comment-actions">${reactionButton("comment", comment.id, comment.reactions)}${replyButton ? button("Reply", "button ghost", `data-reply-comment="${escapeHtml(comment.id)}" data-reply-author="${escapeHtml(author)}"`) : ""}</div></article>`;
 }
 
+/** Renders a generic comment list and form for gallery and profile pages. */
 function commentsPanel(targetType, targetId, comments) {
   return panel("Comments", `<div class="grid">${(comments || []).map((comment) => commentArticle(comment)).join("") || empty("No comments yet.")}<form class="form comment-form" data-target-type="${escapeHtml(targetType)}" data-target-id="${escapeHtml(targetId)}"><input type="hidden" name="parent_comment_id"><div class="replying-to" data-replying-to hidden><span></span>${button("Cancel", "button ghost", "type=button data-cancel-reply")}</div><div class="form-row"><label>Add comment</label><textarea name="body" required data-markdown-editor data-target-type="${escapeHtml(targetType)}" data-target-id="${escapeHtml(targetId)}"></textarea>${markdownHint()}</div>${button("Post comment", "button primary", "type=submit")}</form></div>`);
 }
 
+/** Renders work comments with version badges for the work detail page. */
 function workCommentsPanel(workId, versions, comments, currentVersionId = "") {
   const targetType = currentVersionId ? "version" : "work";
   const targetId = currentVersionId || workId;

@@ -15,6 +15,7 @@ export const ICONS = {
   x: '<path d="M18 6 6 18"/><path d="m6 6 12 12"/>',
 } as const;
 
+/** Renders a Lucide SVG sprite reference for string-rendered buttons and metadata. */
 export function icon(name: keyof typeof ICONS | string, className = "") {
   const body = ICONS[name as keyof typeof ICONS];
   if (!body) return "";

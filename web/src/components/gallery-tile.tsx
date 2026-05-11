@@ -24,6 +24,7 @@ function tileRevealStyle(index: number) {
   return { "--reveal-delay": `${delay}ms` };
 }
 
+/** Displays a responsive gallery tile collection on home, gallery index, and tag pages. */
 export function GalleryMosaic({ galleries }: GalleryMosaicProps) {
   return (
     <div class="gallery-mosaic">
@@ -34,6 +35,7 @@ export function GalleryMosaic({ galleries }: GalleryMosaicProps) {
   );
 }
 
+/** Displays one gallery preview tile with cover art, access metadata, and hover affordances. */
 export function GalleryTile({ gallery, index = 0 }: GalleryTileProps) {
   return (
     <a
@@ -57,6 +59,7 @@ export function GalleryTile({ gallery, index = 0 }: GalleryTileProps) {
   );
 }
 
+/** Formats the work count and freshness text shown at the bottom of gallery tiles. */
 export function galleryTileMeta(gallery: Gallery) {
   const count = Number(gallery.work_count ?? gallery.works_count ?? 0);
   const countLabel = `${count} ${count === 1 ? "work" : "works"}`;
@@ -95,6 +98,7 @@ function accessTooltip(users: AccessUser[], count: number, everyone: boolean, ve
   return `${subject} can ${verb} this gallery.`;
 }
 
+/** Computes the access chip copy and tooltip used by gallery tiles, gallery detail, and work detail. */
 export function galleryAccessSummary(gallery: Gallery = {} as Gallery, kind: AccessKind) {
   const summary = gallery.ownership_summary || {};
   if (kind === "submit") {
@@ -115,6 +119,7 @@ export function galleryAccessSummary(gallery: Gallery = {} as Gallery, kind: Acc
   };
 }
 
+/** Displays one owner or visibility chip used by GalleryAccessChips. */
 function GalleryAccessChip({ gallery, kind }: { gallery: Gallery; kind: AccessKind }) {
   const access = galleryAccessSummary(gallery, kind);
   const iconName = kind === "submit" ? "user" : "eye";
@@ -126,6 +131,7 @@ function GalleryAccessChip({ gallery, kind }: { gallery: Gallery; kind: AccessKi
   );
 }
 
+/** Displays ownership and visibility chips on gallery tiles, gallery detail, and work detail. */
 export function GalleryAccessChips({ gallery, className = "" }: GalleryAccessChipsProps) {
   return (
     <span class={`gallery-access-stack${className ? ` ${className}` : ""}`}>
@@ -135,6 +141,7 @@ export function GalleryAccessChips({ gallery, className = "" }: GalleryAccessChi
   );
 }
 
+/** Displays upload and viewing rules in the add-to-gallery modal. */
 export function GalleryAccessRules({ gallery }: { gallery: Gallery }) {
   const submit = galleryAccessSummary(gallery, "submit");
   const view = galleryAccessSummary(gallery, "view");
@@ -161,6 +168,7 @@ export function GalleryAccessRules({ gallery }: { gallery: Gallery }) {
   );
 }
 
+/** Provides static HTML access rules if the Preact island has not mounted yet. */
 export function galleryAccessRulesFallback(gallery: Gallery) {
   const submit = galleryAccessSummary(gallery, "submit");
   const view = galleryAccessSummary(gallery, "view");

@@ -94,6 +94,12 @@ test("notifications use the joined activity context instead of the old N+1 forma
   assert.doesNotMatch(block, /activityEntry\(c\.env/);
 });
 
+test("notification polling does not update member activity", () => {
+  const block = sourceBlock(workerEntry, "function requestCountsAsActivity", "function currentUser");
+  assert.match(block, /c\.req\.path !== "\/api\/notifications\/poll"/);
+  assert.ok(block.indexOf("requestCountsAsActivity(c)") < block.indexOf("UPDATE users SET last_active_at"));
+});
+
 test("private media stays permission-gated and signed media validates HMAC payloads", () => {
   const signed = routeBlock('app.get("/api/media/signed/:token"', 'app.use("/api/admin/*"');
   assert.match(signed, /readSignedMediaPayload\(c\.env, c\.req\.param\("token"\)\)/);
@@ -150,6 +156,7 @@ test("browser notification polling is etagged and throttled", () => {
   const block = routeBlock('app.get("/api/notifications/poll"', 'app.post("/api/notifications/:id/read"');
   assert.match(worker, /BROWSER_NOTIFICATION_ACTIVE_POLL_INTERVAL_MS = 5 \* 60 \* 1000/);
   assert.match(block, /MAX\(created_at\) AS latest_created_at/);
+  assert.doesNotMatch(block, /sanitizeEtagPart\(since \|\| "all"\)/);
   assert.match(block, /etagMatches\(c\.req\.header\("if-none-match"\), etag\)/);
   assert.ok(block.indexOf("apiNotModified(cache)") < block.indexOf("SELECT id, type, title, body, action_url, created_at"));
   assert.match(block, /X-Active-Poll-Interval-Ms/);
@@ -159,6 +166,7 @@ test("browser notification polling is etagged and throttled", () => {
   assert.match(serviceWorker, /headers\.set\("if-none-match", state\.etag\)/);
   assert.match(serviceWorker, /recentlyUsed \? activeInterval : idleInterval/);
   assert.match(serviceWorker, /notificationsChanged \? timestamp : state\.lastUsedAt/);
+  assert.doesNotMatch(serviceWorker, /Number\(data\.unread_count \|\| 0\) > 0/);
 });
 
 test("gallery crossposting is limited to own or collaborator works and warns on visibility increases", () => {

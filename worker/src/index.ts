@@ -76,6 +76,10 @@ async function ensureWorkRoleSuggestion(db: D1Database, label: string, userId: s
   return id;
 }
 
+function requestCountsAsActivity(c: Ctx) {
+  return c.req.path !== "/api/notifications/poll";
+}
+
 async function requireUser(c: Ctx, next: Next) {
   const auth = c.req.header("authorization") || "";
   const bearer = auth.match(/^Bearer\s+(.+)$/i)?.[1];
@@ -90,7 +94,7 @@ async function requireUser(c: Ctx, next: Next) {
 
   c.set("user", user);
   const lastActive = user.last_active_at ? Date.parse(user.last_active_at) : 0;
-  if (!lastActive || Date.now() - lastActive > 60 * 60 * 1000) {
+  if (requestCountsAsActivity(c) && (!lastActive || Date.now() - lastActive > 60 * 60 * 1000)) {
     const timestamp = now();
     await c.env.DB.prepare("UPDATE users SET last_active_at = ? WHERE id = ?").bind(timestamp, user.id).run().catch(() => undefined);
     user.last_active_at = timestamp;
@@ -201,6 +205,15 @@ async function galleryCapabilities(db: D1Database, user: AppUser, galleryId: str
 
 async function getWork(db: D1Database, id: string) {
   return db.prepare("SELECT * FROM works WHERE id = ? AND deleted_at IS NULL").bind(id).first<WorkRow>();
+}
+
+const FEEDBACK_REQUEST_TTL_MS = 7 * 24 * 60 * 60 * 1000;
+
+function feedbackRequestActive(work: WorkRow) {
+  if (!work.feedback_requested) return false;
+  const requestedAt = Date.parse(work.feedback_requested_at || work.updated_at || work.created_at);
+  if (!Number.isFinite(requestedAt)) return true;
+  return Date.now() - requestedAt < FEEDBACK_REQUEST_TTL_MS;
 }
 
 async function workGalleryLinks(db: D1Database, work: WorkRow) {
@@ -607,13 +620,14 @@ async function serializeWork(env: Env, user: AppUser, work: WorkRow) {
     const serialized = await serializeGallery(env, user, gallery);
     if (serialized.capabilities.view) galleries.push(serialized);
   }
+  const feedbackRequested = feedbackRequestActive(work);
   return {
     ...work,
     created_by_user: creator || null,
     gallery_title: galleries[0]?.title || "",
     galleries,
-    feedback_requested: !!work.feedback_requested,
-    feedback_dismissed: !!feedbackDismissal,
+    feedback_requested: feedbackRequested,
+    feedback_dismissed: feedbackRequested && !!feedbackDismissal,
     feedback_dismissed_at: feedbackDismissal?.dismissed_at || null,
     reactions: reaction,
     capabilities: caps.caps,
@@ -695,8 +709,8 @@ async function serializeGalleryWorkListItem(env: Env, user: AppUser, row: Galler
       handle: row.created_by_handle,
       display_name: row.created_by_display_name,
     } : null,
-    feedback_requested: !!row.feedback_requested,
-    feedback_dismissed: !!row.feedback_dismissed_at,
+    feedback_requested: feedbackRequestActive(row),
+    feedback_dismissed: feedbackRequestActive(row) && !!row.feedback_dismissed_at,
     feedback_dismissed_at: row.feedback_dismissed_at,
     reactions: {
       heart_count: row.heart_count || 0,

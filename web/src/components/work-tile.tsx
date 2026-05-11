@@ -19,8 +19,9 @@ function tileRevealStyle(index: number) {
   return { "--reveal-delay": `${delay}ms` };
 }
 
+/** Displays the feedback-requested flag used on work tiles in grids and feeds. */
 function FeedbackRequestedIndicator({ work }: { work: Work }) {
-  if (!work.feedback_requested || work.feedback_dismissed) return null;
+  if (!work.feedback_requested) return null;
   const prompt = String(work.feedback_prompt || "").trim().replace(/\s+/g, " ");
   const title = prompt ? `Feedback requested: ${prompt}` : "Feedback requested: this work is asking for critique.";
   return (
@@ -32,6 +33,7 @@ function FeedbackRequestedIndicator({ work }: { work: Work }) {
   );
 }
 
+/** Displays the creator/collaborator username pill at the top of a work tile. */
 function WorkAuthorPill({ work }: { work: Work }) {
   const handle = work.created_by_user?.handle || work.created_by_handle || "";
   if (!handle) return null;
@@ -44,6 +46,7 @@ function WorkAuthorPill({ work }: { work: Work }) {
   );
 }
 
+/** Displays one work tile used by gallery grids, fresh works, feedback requests, and tag pages. */
 export function WorkTile({ work, index = 0, galleryId = "" }: WorkTileProps) {
   const version = work.current_version || {};
   const imageUrl = version.thumbnail_url || version.preview_url || "";
@@ -64,6 +67,7 @@ export function WorkTile({ work, index = 0, galleryId = "" }: WorkTileProps) {
   );
 }
 
+/** Displays a responsive grid of work tiles used by gallery, home, and tag views. */
 export function WorkGrid({ works, galleryId = "" }: WorkGridProps) {
   return (
     <div class="image-grid">

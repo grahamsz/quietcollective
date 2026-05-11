@@ -5,6 +5,7 @@ type IconProps = {
   className?: string;
 };
 
+/** Renders a Lucide-backed icon for Preact components and island-rendered controls. */
 export function Icon({ name, className = "" }: IconProps) {
   const body = ICONS[name as keyof typeof ICONS];
   if (!body) return null;

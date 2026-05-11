@@ -8,12 +8,13 @@ import { toast } from "./toast";
 
 let browserNotificationPollTimer = 0;
 
+/** Renders the unread notification bell in the top bar. */
 function notificationBell() {
   if (!state.me) return "";
   const count = Number(state.unreadNotifications || 0);
   const label = count ? `${count} unread notification${count === 1 ? "" : "s"}` : "No unread notifications";
   const countText = count > 99 ? "99+" : String(count);
-  return `<a href="/" class="notification-bell ${count ? "is-active" : ""}" data-link data-notification-bell aria-label="${escapeHtml(label)}" title="${escapeHtml(label)}">${icon("bell")}${count ? `<span data-notification-count>${escapeHtml(countText)}</span>` : ""}</a>`;
+  return `<div class="notification-menu-root" data-notification-menu-root><button class="notification-bell ${count ? "is-active" : ""}" data-notification-bell type="button" aria-label="${escapeHtml(label)}" title="${escapeHtml(label)}" aria-haspopup="menu" aria-expanded="false">${icon("bell")}${count ? `<span data-notification-count>${escapeHtml(countText)}</span>` : ""}</button><div class="notification-popdown" data-notification-popdown hidden><div class="notification-popdown-body">${notificationMenuLoading()}</div>${notificationBrowserToggle()}</div></div>`;
 }
 
 function updateNotificationBell() {
@@ -25,6 +26,14 @@ function updateNotificationBell() {
   bell.setAttribute("aria-label", label);
   bell.setAttribute("title", label);
   bell.innerHTML = `${icon("bell")}${count ? `<span data-notification-count>${escapeHtml(count > 99 ? "99+" : String(count))}</span>` : ""}`;
+}
+
+function notificationMenuLoading() {
+  return `<div class="notification-menu-empty">Loading notifications...</div>`;
+}
+
+function notificationMenuEmpty() {
+  return `<div class="notification-menu-empty">No notifications yet.</div>`;
 }
 
 
@@ -41,6 +50,16 @@ function browserNotificationStatus() {
   if (Notification.permission === "denied") return { label: "Blocked", detail: "Notifications are blocked in this browser.", action: "" };
   if (browserNotificationsEnabled()) return { label: "Enabled", detail: "Checks every 5 minutes for an hour after use, then every 30 minutes.", action: "disable" };
   return { label: "Off", detail: "Browser notifications are off for this device.", action: "enable" };
+}
+
+function notificationBrowserToggle() {
+  const status = browserNotificationStatus();
+  const enabled = status.action === "disable";
+  const attrs = status.action
+    ? `type="button" role="switch" aria-checked="${enabled ? "true" : "false"}" aria-label="Browser notifications" title="${enabled ? "Turn browser notifications off" : "Turn browser notifications on"}" data-browser-notifications-toggle="${escapeHtml(status.action)}"`
+    : `type="button" role="switch" aria-checked="false" aria-label="Browser notifications" title="${escapeHtml(status.label)}" disabled`;
+  const label = status.action === "disable" ? "Turn browser notifications off" : status.action === "enable" ? "Turn browser notifications on" : status.label;
+  return `<div class="notification-popdown-foot"><div><strong>Browser notifications</strong><span>${escapeHtml(status.label)}</span></div><button class="notification-switch ${enabled ? "is-on" : ""}" ${attrs}><span class="notification-switch-track"><span class="notification-switch-knob"></span></span><span class="sr-only">${escapeHtml(label)}</span></button></div>`;
 }
 
 async function notificationWorker() {
@@ -150,6 +169,7 @@ async function syncBrowserNotifications() {
   await postNotificationWorkerMessage({ type: "qc-notifications-poll" });
 }
 
+/** Renders the browser notification settings panel on the profile page. */
 function browserNotificationsPanel() {
   const status = browserNotificationStatus();
   const action = status.action === "enable"
@@ -164,4 +184,4 @@ function bindBrowserNotificationSettings() {
 }
 
 
-export { bindBrowserNotificationSettings, browserNotificationStatus, browserNotificationsAvailable, browserNotificationsEnabled, browserNotificationsPanel, disableBrowserNotifications, enableBrowserNotifications, notificationBell, notificationWorker, postNotificationWorkerMessage, registerPeriodicNotificationSync, scheduleBrowserNotificationPolls, syncBrowserNotifications, touchBrowserNotificationWindow, unregisterPeriodicNotificationSync, updateNotificationBell };
+export { bindBrowserNotificationSettings, browserNotificationStatus, browserNotificationsAvailable, browserNotificationsEnabled, browserNotificationsPanel, disableBrowserNotifications, enableBrowserNotifications, notificationBell, notificationBrowserToggle, notificationMenuEmpty, notificationMenuLoading, notificationWorker, postNotificationWorkerMessage, registerPeriodicNotificationSync, scheduleBrowserNotificationPolls, syncBrowserNotifications, touchBrowserNotificationWindow, unregisterPeriodicNotificationSync, updateNotificationBell };

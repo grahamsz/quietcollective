@@ -67,8 +67,47 @@ type GalleryWorkListRow = WorkRow & {
   collaborator_can_comment: number | null;
 };
 
+let feedbackCleanupCheckedAt = 0;
+const FEEDBACK_CLEANUP_INTERVAL_MS = 5 * 60 * 1000;
+
 export function registerRoutes(app: RouteApp, deps: RouteDeps) {
   const { prepareApiCache, readBody, getUserById, getUserByHandle, requireUser, currentUser, publicUser, getTags, getSetting, setSetting, instanceInfo, adminCount, isAdmin, galleryCapabilities, getWork, workGalleryLinks, workCapabilities, galleryVisibilityRank, workVisibilityRank, assertGalleryCapability, assertWorkCapability, assertWorkCrosspostCapability, canViewTarget, canCommentTarget, insertEvent, processEvent, serializeGallery, reactionSummary, serializeWork, serializeVersion, serializeGalleryWorkListItem, putR2File, ensureWorkRoleSuggestion } = deps;
+
+async function clearExpiredFeedbackRequests(db: D1Database) {
+  const timestamp = Date.now();
+  if (timestamp - feedbackCleanupCheckedAt < FEEDBACK_CLEANUP_INTERVAL_MS) return;
+  feedbackCleanupCheckedAt = timestamp;
+  const result = await db.prepare(
+    `UPDATE works
+     SET feedback_requested = 0,
+         feedback_requested_at = NULL,
+         feedback_prompt = NULL
+     WHERE feedback_requested = 1
+       AND feedback_requested_at IS NOT NULL
+       AND datetime(feedback_requested_at) <= datetime('now', '-7 days')`,
+  ).run();
+  if ((result.meta as { changes?: number } | undefined)?.changes) await bumpApiCacheToken(db);
+}
+
+async function clearFeedbackRequestForCommentTarget(db: D1Database, targetType: string, targetId: string) {
+  let workId = "";
+  if (targetType === "work") {
+    workId = targetId;
+  } else if (targetType === "version") {
+    const version = await db.prepare("SELECT work_id FROM work_versions WHERE id = ?").bind(targetId).first<{ work_id: string }>();
+    workId = version?.work_id || "";
+  }
+  if (!workId) return false;
+  const result = await db.prepare(
+    `UPDATE works
+     SET feedback_requested = 0,
+         feedback_requested_at = NULL,
+         feedback_prompt = NULL
+     WHERE id = ?
+       AND feedback_requested = 1`,
+  ).bind(workId).run();
+  return !!(result.meta as { changes?: number } | undefined)?.changes;
+}
 
 app.use("*", logger());
 app.use("*", cors({
@@ -96,6 +135,11 @@ app.use("*", async (c, next) => {
   c.header("Referrer-Policy", "no-referrer");
   c.header("X-Frame-Options", "DENY");
   c.header("Permissions-Policy", "camera=(), geolocation=(), microphone=(), payment=(), usb=()");
+});
+
+app.use("/api/*", async (c, next) => {
+  await clearExpiredFeedbackRequests(c.env.DB);
+  await next();
 });
 
 app.get("/api/health", (c) => c.json({ ok: true, service: "quietcollective" }));
@@ -1016,8 +1060,8 @@ app.post("/api/galleries/:galleryId/works", async (c) => {
   try {
     await c.env.DB.prepare(
     `INSERT INTO works
-       (id, gallery_id, type, title, description, content_warning, feedback_requested, feedback_prompt, created_by, created_at, updated_at, client_upload_key)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+       (id, gallery_id, type, title, description, content_warning, feedback_requested, feedback_requested_at, feedback_prompt, created_by, created_at, updated_at, client_upload_key)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     ).bind(
       id,
       galleryId,
@@ -1026,6 +1070,7 @@ app.post("/api/galleries/:galleryId/works", async (c) => {
       stringField(body.description),
       null,
       0,
+      null,
       null,
       user.id,
       timestamp,
@@ -1192,12 +1237,26 @@ app.post("/api/works/:id/versions", async (c) => {
 });
 
 app.post("/api/works/:id/feedback-requested", async (c) => {
-  const gate = await assertWorkCapability(c, c.req.param("id"), "edit");
-  if (!gate.ok) return gate.response;
   const body = await readBody(c);
   const requested = body.feedback_requested == null ? true : truthy(body.feedback_requested);
-  await c.env.DB.prepare("UPDATE works SET feedback_requested = ?, feedback_prompt = COALESCE(?, feedback_prompt), updated_at = ? WHERE id = ?")
-    .bind(requested ? 1 : 0, stringField(body.feedback_prompt || body.feedbackPrompt, "") || null, now(), c.req.param("id")).run();
+  const gate = await assertWorkCapability(c, c.req.param("id"), requested ? "edit" : "view");
+  if (!gate.ok) return gate.response;
+  if (!requested && !gate.caps.edit && !gate.caps.comment) return c.json({ error: "Forbidden" }, 403);
+  const timestamp = now();
+  await c.env.DB.prepare(
+    `UPDATE works
+     SET feedback_requested = ?,
+         feedback_requested_at = ?,
+         feedback_prompt = ?,
+         updated_at = ?
+     WHERE id = ?`,
+  ).bind(
+    requested ? 1 : 0,
+    requested ? timestamp : null,
+    requested ? (stringField(body.feedback_prompt || body.feedbackPrompt, "") || gate.work!.feedback_prompt || null) : null,
+    timestamp,
+    c.req.param("id"),
+  ).run();
   if (requested) await insertEvent(c.env, "work.feedback_requested", currentUser(c).id, "work", c.req.param("id"));
   return c.json({ ok: true, feedback_requested: requested });
 });
@@ -1283,9 +1342,10 @@ app.post("/api/comments", async (c) => {
     `INSERT INTO comments (id, target_type, target_id, parent_comment_id, author_id, body, created_at, updated_at)
      VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
   ).bind(id, targetType, targetId, parentId, user.id, commentBody, now(), now()).run();
+  const feedbackCleared = await clearFeedbackRequestForCommentTarget(c.env.DB, targetType, targetId);
   const eventType = parentId ? "comment.replied" : "comment.created";
   await insertEvent(c.env, eventType, user.id, "comment", id, targetType, targetId, { parent_comment_id: parentId, body: commentBody });
-  return c.json({ id }, 201);
+  return c.json({ id, feedback_cleared: feedbackCleared }, 201);
 });
 
 app.get("/api/comments", async (c) => {
@@ -1567,7 +1627,7 @@ app.get("/api/notifications/poll", async (c) => {
   const watermark = await c.env.DB.prepare(
     "SELECT COUNT(*) AS unread_count, MAX(created_at) AS latest_created_at FROM notifications WHERE user_id = ? AND read_at IS NULL",
   ).bind(user.id).first<{ unread_count: number; latest_created_at: string | null }>();
-  const etag = `W/"qc:notifications-poll:${sanitizeEtagPart(user.id)}:${sanitizeEtagPart(since || "all")}:${watermark?.unread_count || 0}:${sanitizeEtagPart(watermark?.latest_created_at || "none")}"`;
+  const etag = `W/"qc:notifications-poll:${sanitizeEtagPart(user.id)}:${watermark?.unread_count || 0}:${sanitizeEtagPart(watermark?.latest_created_at || "none")}"`;
   const cache = { etag, fresh: etagMatches(c.req.header("if-none-match"), etag) };
   if (cache.fresh) return apiNotModified(cache);
   const rows = await c.env.DB.prepare(
