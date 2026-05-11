@@ -199,7 +199,7 @@ function bindMentionInput(input) {
 }
 
 function bindMentionAutocomplete(scope = document) {
-  scope.querySelectorAll("input[name=collaborator_user]").forEach(bindMentionInput);
+  scope.querySelectorAll("input[name=collaborator_user], input[data-mention-input]").forEach(bindMentionInput);
 }
 
 function bindMarkdownMentionAutocomplete(cm) {

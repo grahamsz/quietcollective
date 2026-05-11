@@ -1,6 +1,6 @@
 // @ts-nocheck
 import { api, encodePath, ensureAuthed, loadGalleries, loadMembers, newestFirst, pageShell, setApp, state, updateNotificationBell } from "../app/core";
-import { bindCommentForm } from "../app/comments";
+import { bindCommentForm, highlightLinkedComment } from "../app/comments";
 import { galleriesIndexView, homeView, memberProfileView, membersIndexView, tagPageView } from "../views/islands";
 
 async function renderHome() {
@@ -48,6 +48,7 @@ async function renderMemberProfile(handle) {
   const comments = await api(`/api/comments?target_type=profile&target_id=${encodePath(user.id)}`).catch(() => ({ comments: [] }));
   setApp(pageShell(memberProfileView({ user, comments: comments.comments })));
   bindCommentForm("profile", user.id);
+  highlightLinkedComment();
 }
 
 async function renderTagPage(tag) {

@@ -1363,8 +1363,15 @@ app.get("/api/galleries/:id", async (c) => {
          AND reactions.reaction = 'heart'
        LEFT JOIN feedback_request_dismissals ON feedback_request_dismissals.work_id = works.id
          AND feedback_request_dismissals.user_id = ?
-       LEFT JOIN work_collaborators AS current_work_collaborator ON current_work_collaborator.work_id = works.id
-         AND current_work_collaborator.user_id = ?
+       LEFT JOIN (
+         SELECT work_id,
+                MAX(can_edit) AS can_edit,
+                MAX(can_version) AS can_version,
+                MAX(can_comment) AS can_comment
+         FROM work_collaborators
+         WHERE user_id = ?
+         GROUP BY work_id
+       ) AS current_work_collaborator ON current_work_collaborator.work_id = works.id
        WHERE work_galleries.gallery_id = ? AND works.deleted_at IS NULL
        GROUP BY works.id
        ORDER BY work_galleries.updated_at DESC, works.updated_at DESC`,
@@ -1479,7 +1486,7 @@ app.post("/api/galleries/:id/members", async (c) => {
   if (!gate.ok) return gate.response;
   const body = await readBody(c);
   const handle = normalizeHandle(stringField(body.handle));
-  const userId = stringField(body.user_id || body.userId) || (handle ? (await c.env.DB.prepare("SELECT id FROM users WHERE handle = ?").bind(handle).first<{ id: string }>())?.id : "");
+  const userId = stringField(body.user_id || body.userId) || (handle ? (await c.env.DB.prepare("SELECT id FROM users WHERE handle = ? AND disabled_at IS NULL").bind(handle).first<{ id: string }>())?.id : "");
   if (!userId) return c.json({ error: "Member user is required" }, 400);
   await c.env.DB.prepare(
     `INSERT INTO gallery_members
@@ -1635,17 +1642,17 @@ async function createWorkCollaborator(c: Ctx, workId: string, body: WorkCollabor
   const timestamp = now();
 
   if (linkedUserId) {
-    const existing = await c.env.DB.prepare(
-      "SELECT id FROM work_collaborators WHERE work_id = ? AND user_id = ?",
-    ).bind(workId, linkedUserId).first<{ id: string }>();
-    if (existing) {
+    const existingSameRole = await c.env.DB.prepare(
+      "SELECT id FROM work_collaborators WHERE work_id = ? AND user_id = ? AND lower(role_label) = lower(?)",
+    ).bind(workId, linkedUserId, roleLabel).first<{ id: string }>();
+    if (existingSameRole) {
       await c.env.DB.prepare(
         `UPDATE work_collaborators
          SET display_name = ?, role_suggestion_id = ?, role_label = ?, credit_order = ?, updated_at = ?
          WHERE id = ?`,
-      ).bind(displayName, roleSuggestionId, roleLabel, creditOrder, timestamp, existing.id).run();
-      await insertEvent(c.env, "work.collaborator_updated", currentUser(c).id, "work", workId, "work_collaborator", existing.id, { collaborator_id: existing.id, user_id: linkedUserId });
-      return { ok: true, id: existing.id, display_name: displayName, user_id: linkedUserId, role_label: roleLabel, duplicate: true };
+      ).bind(displayName, roleSuggestionId, roleLabel, creditOrder, timestamp, existingSameRole.id).run();
+      await insertEvent(c.env, "work.collaborator_updated", currentUser(c).id, "work", workId, "work_collaborator", existingSameRole.id, { collaborator_id: existingSameRole.id, user_id: linkedUserId });
+      return { ok: true, id: existingSameRole.id, display_name: displayName, user_id: linkedUserId, role_label: roleLabel, duplicate: true };
     }
   }
 
@@ -1670,10 +1677,10 @@ async function createWorkCollaborator(c: Ctx, workId: string, body: WorkCollabor
     ).run();
   } catch (error) {
     if (linkedUserId) {
-      const existing = await c.env.DB.prepare(
-        "SELECT id FROM work_collaborators WHERE work_id = ? AND user_id = ?",
-      ).bind(workId, linkedUserId).first<{ id: string }>();
-      if (existing) return { ok: true, id: existing.id, display_name: displayName, user_id: linkedUserId, role_label: roleLabel, duplicate: true };
+      const existingSameRole = await c.env.DB.prepare(
+        "SELECT id FROM work_collaborators WHERE work_id = ? AND user_id = ? AND lower(role_label) = lower(?)",
+      ).bind(workId, linkedUserId, roleLabel).first<{ id: string }>();
+      if (existingSameRole) return { ok: true, id: existingSameRole.id, display_name: displayName, user_id: linkedUserId, role_label: roleLabel, duplicate: true };
     }
     return { ok: false, display_name: displayName, user_id: linkedUserId, role_label: roleLabel, error: error instanceof Error ? error.message : "Could not add collaborator" };
   }
@@ -1956,14 +1963,20 @@ app.patch("/api/works/:id/collaborators/:collaboratorId", async (c) => {
   }
   const displayName = hasIdentity ? linkedUser?.handle || identityText : null;
   if (hasIdentity && !displayName) return c.json({ error: "User or collaborator name is required" }, 400);
-  if (linkedUserId) {
-    const duplicate = await c.env.DB.prepare(
-      "SELECT id FROM work_collaborators WHERE work_id = ? AND user_id = ? AND id <> ?",
-    ).bind(c.req.param("id"), linkedUserId, c.req.param("collaboratorId")).first<{ id: string }>();
-    if (duplicate) return c.json({ error: "That user is already credited on this work" }, 400);
-  }
   const roleLabel = normalizeRoleLabel(stringField(body.role_label || body.roleLabel, ""));
   const roleSuggestionId = roleLabel ? await ensureWorkRoleSuggestion(c.env.DB, roleLabel, currentUser(c).id) : null;
+  const currentCollaborator = await c.env.DB.prepare(
+    "SELECT user_id, role_label FROM work_collaborators WHERE id = ? AND work_id = ?",
+  ).bind(c.req.param("collaboratorId"), c.req.param("id")).first<{ user_id: string | null; role_label: string }>();
+  if (!currentCollaborator) return c.json({ error: "Not found" }, 404);
+  const nextUserId = hasIdentity ? linkedUserId : currentCollaborator.user_id;
+  const nextRoleLabel = roleLabel || currentCollaborator.role_label;
+  if (nextUserId) {
+    const duplicateSameRole = await c.env.DB.prepare(
+      "SELECT id FROM work_collaborators WHERE work_id = ? AND user_id = ? AND lower(role_label) = lower(?) AND id <> ?",
+    ).bind(c.req.param("id"), nextUserId, nextRoleLabel, c.req.param("collaboratorId")).first<{ id: string }>();
+    if (duplicateSameRole) return c.json({ error: "That user already has that role on this work" }, 400);
+  }
   await c.env.DB.prepare(
     `UPDATE work_collaborators
      SET display_name = CASE WHEN ? THEN ? ELSE display_name END,
@@ -2057,7 +2070,7 @@ app.post("/api/reactions/:targetType/:targetId/heart", async (c) => {
   const user = currentUser(c);
   const targetType = stringField(c.req.param("targetType"));
   const targetId = stringField(c.req.param("targetId"));
-  if (targetType !== "work" && targetType !== "comment") return c.json({ error: "Unsupported reaction target" }, 400);
+  if (targetType !== "work" && targetType !== "comment" && targetType !== "gallery") return c.json({ error: "Unsupported reaction target" }, 400);
   if (!(await canViewTarget(c.env.DB, user, targetType, targetId))) return c.json({ error: "Forbidden" }, 403);
   const result = await c.env.DB.prepare(
     `INSERT OR IGNORE INTO reactions (id, target_type, target_id, user_id, reaction, created_at)
@@ -2073,7 +2086,7 @@ app.delete("/api/reactions/:targetType/:targetId/heart", async (c) => {
   const user = currentUser(c);
   const targetType = stringField(c.req.param("targetType"));
   const targetId = stringField(c.req.param("targetId"));
-  if (targetType !== "work" && targetType !== "comment") return c.json({ error: "Unsupported reaction target" }, 400);
+  if (targetType !== "work" && targetType !== "comment" && targetType !== "gallery") return c.json({ error: "Unsupported reaction target" }, 400);
   if (!(await canViewTarget(c.env.DB, user, targetType, targetId))) return c.json({ error: "Forbidden" }, 403);
   await c.env.DB.prepare(
     "DELETE FROM reactions WHERE target_type = ? AND target_id = ? AND user_id = ? AND reaction = 'heart'",
@@ -2086,10 +2099,10 @@ app.get("/api/tags/popular", async (c) => {
   const cache = await prepareApiCache(c, "tags:popular");
   if (cache.fresh) return apiNotModified(cache);
   const cutoff = new Date(Date.now() - POPULAR_TAG_WINDOW_DAYS * 24 * 60 * 60 * 1000).toISOString();
-  const visibleGallerySql = (alias: string) => `(? = 'admin' OR ${alias}.owner_user_id = ? OR ${alias}.created_by = ? OR ${alias}.visibility = 'server_public' OR ${alias}.whole_server_upload = 1 OR EXISTS (SELECT 1 FROM gallery_members WHERE gallery_members.gallery_id = ${alias}.id AND gallery_members.user_id = ? AND gallery_members.can_view = 1))`;
-  const visibleGalleryArgs = () => [user.role, user.id, user.id, user.id];
-  const visibleWorkSql = (alias: string) => `(? = 'admin' OR ${alias}.created_by = ? OR EXISTS (SELECT 1 FROM work_collaborators WHERE work_collaborators.work_id = ${alias}.id AND work_collaborators.user_id = ?) OR EXISTS (SELECT 1 FROM work_galleries JOIN galleries AS tag_work_gallery ON tag_work_gallery.id = work_galleries.gallery_id WHERE work_galleries.work_id = ${alias}.id AND ${visibleGallerySql("tag_work_gallery")}))`;
-  const visibleWorkArgs = () => [user.role, user.id, user.id, ...visibleGalleryArgs()];
+  const visibleGallerySql = (alias: string) => `(${alias}.owner_user_id = ? OR ${alias}.created_by = ? OR ${alias}.visibility = 'server_public' OR ${alias}.whole_server_upload = 1 OR EXISTS (SELECT 1 FROM gallery_members WHERE gallery_members.gallery_id = ${alias}.id AND gallery_members.user_id = ? AND gallery_members.can_view = 1))`;
+  const visibleGalleryArgs = () => [user.id, user.id, user.id];
+  const visibleWorkSql = (alias: string) => `(${alias}.created_by = ? OR EXISTS (SELECT 1 FROM work_collaborators WHERE work_collaborators.work_id = ${alias}.id AND work_collaborators.user_id = ?) OR EXISTS (SELECT 1 FROM work_galleries JOIN galleries AS tag_work_gallery ON tag_work_gallery.id = work_galleries.gallery_id WHERE work_galleries.work_id = ${alias}.id AND ${visibleGallerySql("tag_work_gallery")}))`;
+  const visibleWorkArgs = () => [user.id, user.id, ...visibleGalleryArgs()];
   const tags = new Map<string, { tag: string; count: number; last_used_at: string }>();
   const [galleries, works, comments, profileTags] = await Promise.all([
     c.env.DB.prepare(
@@ -2208,7 +2221,7 @@ app.patch("/api/comments/:id", async (c) => {
   const user = currentUser(c);
   const comment = await c.env.DB.prepare("SELECT * FROM comments WHERE id = ? AND deleted_at IS NULL").bind(c.req.param("id")).first<{ author_id: string; target_type: string; target_id: string }>();
   if (!comment) return c.json({ error: "Not found" }, 404);
-  if (comment.author_id !== user.id && user.role !== "admin") return c.json({ error: "Forbidden" }, 403);
+  if (comment.author_id !== user.id) return c.json({ error: "Forbidden" }, 403);
   const body = await readBody(c);
   await c.env.DB.prepare("UPDATE comments SET body = ?, updated_at = ? WHERE id = ?").bind(stringField(body.body), now(), c.req.param("id")).run();
   return c.json({ ok: true });
@@ -2218,7 +2231,7 @@ app.delete("/api/comments/:id", async (c) => {
   const user = currentUser(c);
   const comment = await c.env.DB.prepare("SELECT author_id FROM comments WHERE id = ? AND deleted_at IS NULL").bind(c.req.param("id")).first<{ author_id: string }>();
   if (!comment) return c.json({ error: "Not found" }, 404);
-  if (comment.author_id !== user.id && user.role !== "admin") return c.json({ error: "Forbidden" }, 403);
+  if (comment.author_id !== user.id) return c.json({ error: "Forbidden" }, 403);
   await c.env.DB.prepare("UPDATE comments SET deleted_at = ?, updated_at = ? WHERE id = ?").bind(now(), now(), c.req.param("id")).run();
   return c.json({ ok: true });
 });
@@ -2249,30 +2262,8 @@ app.get("/api/notifications", async (c) => {
   const user = currentUser(c);
   const cache = await prepareApiCache(c, "notifications");
   if (cache.fresh) return apiNotModified(cache);
-  const rows = await c.env.DB.prepare(
-    `WITH recent AS (
-       SELECT domain_events.*,
-              notifications.id AS notification_id,
-              notifications.event_id AS notification_event_id,
-              notifications.type AS notification_type,
-              notifications.body AS notification_body,
-              notifications.read_at AS notification_read_at,
-              notifications.created_at AS notification_created_at
-       FROM notifications
-       JOIN domain_events ON domain_events.id = notifications.event_id
-       WHERE notifications.user_id = ?
-       ORDER BY notifications.created_at DESC LIMIT 100
-     )
-     ${ACTIVITY_CONTEXT_SELECT}
-     ORDER BY recent.notification_created_at DESC`,
-  ).bind(user.id).all<NotificationActivityJoinedRow>();
-  const { galleryIds, workIds } = collectActivityVisibilityIds(rows.results);
-  const [galleries, works] = await Promise.all([
-    visibleGalleryIds(c.env.DB, user, galleryIds),
-    visibleWorkIds(c.env.DB, user, workIds),
-  ]);
+  const visibleRows = (await visibleNotificationRows(c, user, { limit: 200 })).slice(0, 100);
   const thumbnailCache = new Map<string, Promise<string | null>>();
-  const visibleRows = rows.results.filter((row) => joinedEventVisible(user, row, galleries, works));
   const notifications = await Promise.all(visibleRows.map(async (row) => {
     const activity = await activityEntryFromJoinedRow(c.env, user, row, thumbnailCache).catch(() => null);
     return {
@@ -2291,15 +2282,20 @@ app.get("/api/notifications", async (c) => {
   return cacheableJson(c, cache, { notifications });
 });
 
-app.get("/api/notifications/poll", async (c) => {
-  const user = currentUser(c);
-  const since = stringField(c.req.query("since"), "");
-  const watermark = await c.env.DB.prepare(
-    "SELECT COUNT(*) AS unread_count, MAX(created_at) AS latest_created_at FROM notifications WHERE user_id = ? AND read_at IS NULL",
-  ).bind(user.id).first<{ unread_count: number; latest_created_at: string | null }>();
-  const etag = `W/"qc:notifications-poll:${sanitizeEtagPart(user.id)}:${watermark?.unread_count || 0}:${sanitizeEtagPart(watermark?.latest_created_at || "none")}"`;
-  const cache = { etag, fresh: etagMatches(c.req.header("if-none-match"), etag) };
-  if (cache.fresh) return apiNotModified(cache);
+type VisibleNotificationOptions = {
+  unreadOnly?: boolean;
+  since?: string;
+  limit?: number;
+};
+
+async function visibleNotificationRows(c: Ctx, user: AppUser, options: VisibleNotificationOptions = {}) {
+  const limit = Math.max(1, Math.min(Math.floor(options.limit || 100), 1000));
+  const since = stringField(options.since, "");
+  const unreadWhere = options.unreadOnly ? "AND notifications.read_at IS NULL" : "";
+  const sinceWhere = since ? "AND notifications.created_at > ?" : "";
+  const binds: Array<string | number> = [user.id];
+  if (since) binds.push(since);
+  binds.push(limit);
   const rows = await c.env.DB.prepare(
     `WITH recent AS (
        SELECT domain_events.*,
@@ -2314,20 +2310,34 @@ app.get("/api/notifications/poll", async (c) => {
        FROM notifications
        JOIN domain_events ON domain_events.id = notifications.event_id
        WHERE notifications.user_id = ?
-         AND notifications.read_at IS NULL
-         AND (? = '' OR notifications.created_at > ?)
-       ORDER BY notifications.created_at DESC LIMIT 5
+         ${unreadWhere}
+         ${sinceWhere}
+       ORDER BY notifications.created_at DESC LIMIT ?
      )
      ${ACTIVITY_CONTEXT_SELECT}
      ORDER BY recent.notification_created_at DESC`,
-  ).bind(user.id, since, since).all<NotificationActivityJoinedRow>();
+  ).bind(...binds).all<NotificationActivityJoinedRow>();
   const { galleryIds, workIds } = collectActivityVisibilityIds(rows.results);
   const [galleries, works] = await Promise.all([
     visibleGalleryIds(c.env.DB, user, galleryIds),
     visibleWorkIds(c.env.DB, user, workIds),
   ]);
+  return rows.results.filter((row) => joinedEventVisible(user, row, galleries, works));
+}
+
+app.get("/api/notifications/poll", async (c) => {
+  const user = currentUser(c);
+  const since = stringField(c.req.query("since"), "");
+  const visibleUnreadRows = await visibleNotificationRows(c, user, { unreadOnly: true, limit: 1000 });
+  const unreadCount = visibleUnreadRows.length;
+  const latestCreatedAt = visibleUnreadRows[0]?.notification_created_at || null;
+  const etag = `W/"qc:notifications-poll:${sanitizeEtagPart(user.id)}:${unreadCount}:${sanitizeEtagPart(latestCreatedAt || "none")}"`;
+  const cache = { etag, fresh: etagMatches(c.req.header("if-none-match"), etag) };
+  if (cache.fresh) return apiNotModified(cache);
   const thumbnailCache = new Map<string, Promise<string | null>>();
-  const visibleRows = rows.results.filter((row) => joinedEventVisible(user, row, galleries, works));
+  const visibleRows = visibleUnreadRows
+    .filter((row) => !since || row.notification_created_at > since)
+    .slice(0, 5);
   const notifications = await Promise.all(visibleRows.map(async (row) => {
     const activity = await activityEntryFromJoinedRow(c.env, user, row, thumbnailCache).catch(() => null);
     return {
@@ -2351,8 +2361,8 @@ app.get("/api/notifications/poll", async (c) => {
     active_interval_ms: BROWSER_NOTIFICATION_ACTIVE_POLL_INTERVAL_MS,
     idle_interval_ms: BROWSER_NOTIFICATION_IDLE_POLL_INTERVAL_MS,
     active_window_ms: BROWSER_NOTIFICATION_ACTIVE_WINDOW_MS,
-    unread_count: watermark?.unread_count || 0,
-    latest_created_at: watermark?.latest_created_at || null,
+    unread_count: unreadCount,
+    latest_created_at: latestCreatedAt,
     notifications,
   });
 });

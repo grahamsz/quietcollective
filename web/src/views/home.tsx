@@ -39,9 +39,6 @@ export function HomeView({ instanceName, subtitle, galleries, works, activityEve
           <h1>{instanceName || "QuietCollective"}</h1>
           <p class="lede">{subtitle || "Private image galleries, critique, collaborator credits, and member profiles for logged-in members."}</p>
         </div>
-        <div class="toolbar">
-          <a href="/galleries/new" class="button primary square-button" data-link aria-label="New gallery" title="New gallery"><Icon name="plus" /><span class="sr-only">New gallery</span></a>
-        </div>
       </div>
       {(galleries || []).length ? <Panel title="Recently Updated Galleries" extra="flush-panel"><GalleryMosaic galleries={galleries.slice(0, 14)} /></Panel> : <Empty message="No visible galleries yet." />}
       {(works || []).length ? <Panel title="Fresh Works" extra="flush-panel"><WorkGrid works={works.slice(0, 18)} /></Panel> : null}

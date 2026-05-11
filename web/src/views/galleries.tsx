@@ -14,6 +14,10 @@ function RawHtml({ html }) {
   return <div dangerouslySetInnerHTML={{ __html: html || "" }} />;
 }
 
+function RawInline({ html }) {
+  return <span dangerouslySetInnerHTML={{ __html: html || "" }} />;
+}
+
 function Empty({ message }) {
   return <div class="empty-state">{message}</div>;
 }
@@ -38,7 +42,7 @@ function GalleryChoiceHelp({ type, value }) {
         : "Individual galleries are controlled by you. You can still invite people to view or comment."
     : value === "server_public"
       ? "Everyone means any logged-in member of this instance can view it. It is never anonymous public web access."
-      : "Private means only you, explicitly added gallery members, and admins can view it.";
+      : "Private means only you and explicitly added gallery members can view it.";
   return <span class="field-hint choice-hint" data-ownership-help={type === "ownership" ? "" : undefined} data-visibility-help={type === "visibility" ? "" : undefined}>{help}</span>;
 }
 
@@ -128,7 +132,7 @@ function GalleryMembersPanel({ gallery, members }) {
 }
 
 /** TSX block for the gallery detail route; `pages/galleries.ts` binds upload/drop/comment behavior. */
-export function GalleryDetailView({ id, gallery, works, commentsHtml, members }) {
+export function GalleryDetailView({ id, gallery, works, commentsHtml, reactionButtonHtml, members }) {
   const emptyMessage = gallery.capabilities.upload_work
     ? "Drop images here or use the + button to start this gallery."
     : "No works in this gallery yet.";
@@ -139,7 +143,12 @@ export function GalleryDetailView({ id, gallery, works, commentsHtml, members })
           <p class="eyebrow">Gallery</p>
           <h1>{gallery.title}</h1>
           <Markdown source={gallery.description} fallback="No description" />
-          <div class="gallery-access-inline"><GalleryAccessChips gallery={gallery} className="is-inline" /></div>
+          <div class="gallery-access-inline">
+            <GalleryAccessChips gallery={gallery} className="is-inline" />
+            <span class="work-meta-actions">
+              <RawInline html={reactionButtonHtml} />
+            </span>
+          </div>
         </div>
         <div class="toolbar">
           {gallery.capabilities.upload_work ? (
@@ -285,20 +294,46 @@ export function ModalErrorNotice({ message }) {
   return <div class="notice error">{message}</div>;
 }
 
-function GallerySettingsMemberRows({ members }) {
+function GallerySettingsMemberRows({ gallery, members }) {
+  const individualGallery = gallery?.ownership_type === "self" && !gallery?.whole_server_upload;
+  const canManage = !!gallery?.capabilities?.manage_collaborators;
   return (
-    <div class="table-wrap">
-      <table>
-        <thead><tr><th>Member</th><th>Role</th><th>Capabilities</th></tr></thead>
-        <tbody>
-          {(members || []).map((member) => {
-            const capabilities = ["view", "edit", "upload_work", "comment", "manage_collaborators"]
-              .filter((key) => member[`can_${key}`] || (key === "view" && member.can_view))
-              .join(", ");
-            return <tr key={member.id || member.handle}><td>@{member.handle}</td><td>{member.role_label}</td><td>{capabilities}</td></tr>;
-          })}
-        </tbody>
-      </table>
+    <div class="gallery-member-settings">
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>Member</th><th>Role</th><th>Capabilities</th></tr></thead>
+          <tbody>
+            {(members || []).length ? (members || []).map((member) => {
+              const capabilities = ["view", "edit", "upload_work", "comment", "manage_collaborators"]
+                .filter((key) => !individualGallery || key === "view" || key === "comment")
+                .filter((key) => member[`can_${key}`] || (key === "view" && member.can_view))
+                .join(", ");
+              return <tr key={member.id || member.handle}><td>@{member.handle}</td><td>{member.role_label}</td><td>{capabilities}</td></tr>;
+            }) : <tr><td colSpan={3}>No explicit gallery members yet.</td></tr>}
+          </tbody>
+        </table>
+      </div>
+      {canManage ? (
+        <form class="form compact-form gallery-member-form" id="gallery-member-form">
+          <div class="form-row">
+            <label>Member</label>
+            <input name="handle" placeholder="@handle" autocomplete="off" data-mention-input required />
+          </div>
+          <div class="form-row">
+            <label>Role</label>
+            <input name="role_label" placeholder="collaborator" value="collaborator" />
+          </div>
+          <label class="checkbox-row"><input type="checkbox" name="can_comment" value="1" checked /> Comment</label>
+          {!individualGallery ? (
+            <>
+              <label class="checkbox-row"><input type="checkbox" name="can_upload_work" value="1" checked /> Add images</label>
+              <label class="checkbox-row"><input type="checkbox" name="can_edit" value="1" /> Edit gallery details</label>
+              <label class="checkbox-row"><input type="checkbox" name="can_manage_collaborators" value="1" /> Manage members</label>
+            </>
+          ) : null}
+          <button class="button primary" type="submit">Add member</button>
+        </form>
+      ) : null}
     </div>
   );
 }
@@ -352,7 +387,7 @@ export function GallerySettingsView({ id, gallery, works, members }) {
             <button class="button primary" type="submit">Save gallery</button>
           </form>
         </Panel>
-        <Panel title="Members"><GallerySettingsMemberRows members={members || []} /></Panel>
+        <Panel title="Members"><GallerySettingsMemberRows gallery={gallery} members={members || []} /></Panel>
       </div>
     </section>
   );

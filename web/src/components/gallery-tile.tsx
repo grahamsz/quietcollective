@@ -72,7 +72,7 @@ function galleryOpenToSubmissions(gallery: Gallery = {} as Gallery) {
 }
 
 function galleryVisibleToEveryone(gallery: Gallery = {} as Gallery) {
-  return gallery.visibility === "server_public" || galleryOpenToSubmissions(gallery);
+  return galleryOpenToSubmissions(gallery) || gallery.visibility === "server_public";
 }
 
 function accessHandles(users: AccessUser[] = []) {

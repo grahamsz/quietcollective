@@ -157,10 +157,6 @@ export async function visibleGalleryIds(db: D1Database, user: AppUser, ids: Set<
   const values = [...ids];
   if (!values.length) return new Set<string>();
   const marker = placeholders(values);
-  if (user.role === "admin") {
-    const rows = await db.prepare(`SELECT id FROM galleries WHERE id IN (${marker})`).bind(...values).all<{ id: string }>();
-    return new Set(rows.results.map((row) => row.id));
-  }
   const rows = await db.prepare(
     `SELECT DISTINCT galleries.id
      FROM galleries
@@ -183,10 +179,6 @@ export async function visibleWorkIds(db: D1Database, user: AppUser, ids: Set<str
   const values = [...ids];
   if (!values.length) return new Set<string>();
   const marker = placeholders(values);
-  if (user.role === "admin") {
-    const rows = await db.prepare(`SELECT id FROM works WHERE deleted_at IS NULL AND id IN (${marker})`).bind(...values).all<{ id: string }>();
-    return new Set(rows.results.map((row) => row.id));
-  }
   const rows = await db.prepare(
     `SELECT DISTINCT works.id
      FROM works
@@ -245,11 +237,12 @@ function targetVisible(row: ActivityJoinedRow, visibleGalleries: Set<string>, vi
 
 export function joinedEventVisible(user: AppUser, row: ActivityJoinedRow, visibleGalleries: Set<string>, visibleWorks: Set<string>) {
   if (row.type === "rules.published" || row.type === "rules.accepted") return true;
-  if (row.subject_type === "user" || row.subject_type === "profile") return true;
+  if (row.subject_type === "user") return row.type === "user.joined";
+  if (row.subject_type === "profile") return true;
   if (row.subject_type === "gallery") return visibleGalleries.has(row.subject_id);
   if (row.subject_type === "work") return !!row.subject_work_id && visibleWorks.has(row.subject_work_id);
   if (row.target_type && row.target_id) return targetVisible(row, visibleGalleries, visibleWorks);
-  return user.role === "admin";
+  return false;
 }
 
 function fallbackThumbnailUrl(workId: string | null, versionId: string | null) {
@@ -321,14 +314,14 @@ export async function activityEntryFromJoinedRow(
     comment_preview = stripMarkdownImages(body).slice(0, 360);
     const mentionedYou = extractMentions(body).includes(user.handle.toLowerCase());
     if (row.target_type === "work" && row.target_work_id) {
-      href = `/works/${row.target_work_id}`;
+      href = `/works/${row.target_work_id}#comment-${encodeURIComponent(row.subject_id)}`;
       thumbnail_url = await activityThumbnailUrl(env, thumbnailCache, row.target_work_thumb_key, row.target_work_thumb_type, row.target_work_id, row.target_work_thumb_version_id);
       summary = mentionedYou ? `${actorLabel} mentioned you on "${row.target_work_title || "work"}"` : `${actorLabel} commented on "${row.target_work_title || "work"}"`;
     } else if (row.target_type === "gallery" && row.target_id) {
-      href = `/galleries/${row.target_id}`;
+      href = `/galleries/${row.target_id}#comment-${encodeURIComponent(row.subject_id)}`;
       summary = mentionedYou ? `${actorLabel} mentioned you in gallery "${row.target_gallery_title || "gallery"}"` : `${actorLabel} commented in "${row.target_gallery_title || "gallery"}"`;
     } else if (row.target_type === "version" && row.target_version_work_id) {
-      href = `/works/${row.target_version_work_id}`;
+      href = `/works/${row.target_version_work_id}#comment-${encodeURIComponent(row.subject_id)}`;
       thumbnail_url = await activityThumbnailUrl(env, thumbnailCache, row.target_version_thumb_key, row.target_version_thumb_type, row.target_version_work_id, row.target_version_id);
       summary = mentionedYou ? `${actorLabel} mentioned you on a version of "${row.target_version_work_title || "work"}"` : `${actorLabel} commented on a version of "${row.target_version_work_title || "work"}"`;
     } else if (mentionedYou) {
@@ -338,20 +331,24 @@ export async function activityEntryFromJoinedRow(
   } else if (row.type === "reaction.created") {
     const targetType = String(payload.target_type || row.target_type || "");
     if (targetType === "work" && row.target_work_id) {
-      href = `/works/${row.target_work_id}`;
+      href = `/works/${row.target_work_id}#heart-work-${encodeURIComponent(row.target_work_id)}`;
       thumbnail_url = await activityThumbnailUrl(env, thumbnailCache, row.target_work_thumb_key, row.target_work_thumb_type, row.target_work_id, row.target_work_thumb_version_id);
       summary = `${actorLabel} liked "${row.target_work_title || "work"}"`;
+    } else if (targetType === "gallery" && row.target_id) {
+      href = `/galleries/${row.target_id}#heart-gallery-${encodeURIComponent(row.target_id)}`;
+      summary = `${actorLabel} liked gallery "${row.target_gallery_title || "gallery"}"`;
     } else if (targetType === "comment") {
+      const commentHash = row.target_id ? `#comment-${encodeURIComponent(row.target_id)}` : "";
       comment_preview = stripMarkdownImages(row.target_comment_body || "").slice(0, 240);
       summary = `${actorLabel} liked a comment`;
       if (row.target_comment_target_type === "work" && row.comment_target_work_id) {
-        href = `/works/${row.comment_target_work_id}`;
+        href = `/works/${row.comment_target_work_id}${commentHash}`;
         thumbnail_url = await activityThumbnailUrl(env, thumbnailCache, row.comment_target_work_thumb_key, row.comment_target_work_thumb_type, row.comment_target_work_id, row.comment_target_work_thumb_version_id);
       }
-      if (row.target_comment_target_type === "gallery" && row.target_comment_target_id) href = `/galleries/${row.target_comment_target_id}`;
-      if (row.target_comment_target_type === "profile" && row.comment_target_profile_handle) href = `/members/${row.comment_target_profile_handle}`;
+      if (row.target_comment_target_type === "gallery" && row.target_comment_target_id) href = `/galleries/${row.target_comment_target_id}${commentHash}`;
+      if (row.target_comment_target_type === "profile" && row.comment_target_profile_handle) href = `/members/${row.comment_target_profile_handle}${commentHash}`;
       if (row.target_comment_target_type === "version" && row.comment_target_version_work_id) {
-        href = `/works/${row.comment_target_version_work_id}`;
+        href = `/works/${row.comment_target_version_work_id}${commentHash}`;
         thumbnail_url = await activityThumbnailUrl(env, thumbnailCache, row.comment_target_version_thumb_key, row.comment_target_version_thumb_type, row.comment_target_version_work_id, row.comment_target_version_id);
       }
     }

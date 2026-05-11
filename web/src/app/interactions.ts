@@ -14,7 +14,8 @@ let notificationOutsideBound = false;
 function reactionButton(targetType, targetId, reactions = {}) {
   const count = reactions.heart_count || 0;
   const label = reactions.hearted_by_me ? "Remove heart" : "Heart";
-  return `<button class="heart-button ${reactions.hearted_by_me ? "is-active" : ""}" data-heart-target-type="${escapeHtml(targetType)}" data-heart-target-id="${escapeHtml(targetId)}" data-hearted="${reactions.hearted_by_me ? "true" : "false"}" type="button" aria-label="${escapeHtml(label)}" title="${escapeHtml(label)}">${icon("heart")}${count ? `<span>${escapeHtml(String(count))}</span>` : ""}</button>`;
+  const heartId = `${targetType}-${targetId}`;
+  return `<button id="heart-${escapeHtml(heartId)}" class="heart-button ${reactions.hearted_by_me ? "is-active" : ""}" data-heart-target-type="${escapeHtml(targetType)}" data-heart-target-id="${escapeHtml(targetId)}" data-hearted="${reactions.hearted_by_me ? "true" : "false"}" type="button" aria-label="${escapeHtml(label)}" title="${escapeHtml(label)}">${icon("heart")}${count ? `<span>${escapeHtml(String(count))}</span>` : ""}</button>`;
 }
 
 function bindReactionButtons() {

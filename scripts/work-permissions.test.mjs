@@ -53,6 +53,13 @@ const uploadCaps = {
   comment: true,
   manage_collaborators: false,
 };
+const privateCaps = {
+  view: false,
+  edit: false,
+  upload_work: false,
+  comment: false,
+  manage_collaborators: false,
+};
 const publicViewCaps = {
   view: true,
   edit: false,
@@ -125,15 +132,15 @@ test("work authors and explicit work collaborators can still edit", () => {
   );
 });
 
-test("admin role alone can view but cannot mutate another member's work", () => {
+test("admin role alone does not grant content access", () => {
   const result = resolveWorkCapabilities({
-    galleryCaps: uploadCaps,
+    galleryCaps: privateCaps,
     work,
     user: admin,
     collaborator: null,
   });
 
-  assert.equal(result.caps.view, true);
+  assert.equal(result.caps.view, false);
   assert.equal(result.caps.edit, false);
   assert.equal(result.caps.manage_collaborators, false);
   assert.equal(result.version, false);

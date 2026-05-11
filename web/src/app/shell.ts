@@ -20,10 +20,11 @@ function ownershipHelp(value) {
   return "Individual galleries are controlled by you. You can still invite people to view or comment.";
 }
 
-function visibilityHelp(value) {
+function visibilityHelp(value, ownership = "") {
+  if (ownership === "self" && value === "server_public") return "Everyone can view and comment, but only you can add images unless you invite members.";
   return value === "server_public"
     ? "Everyone means any logged-in member of this instance can view it. It is never anonymous public web access."
-    : "Private means only you, explicitly added gallery members, and admins can view it.";
+    : "Private means only you and explicitly added gallery members can view it.";
 }
 
 /** Renders the site logo mark used by the sidebar and auth shell. */
@@ -51,10 +52,11 @@ function pageShell(content, options = {}) {
           <h2>My Galleries</h2>
           ${myGalleries.length ? `<div class="sidebar-gallery-list">${myGalleries.map((gallery) => `<a href="/galleries/${gallery.id}" data-link><span>${escapeHtml(gallery.title)}</span></a>`).join("")}</div>` : `<div class="empty-state compact">No galleries yet.</div>`}
           <a href="/galleries" class="sidebar-view-all" data-link>View All</a>
-          <a href="/galleries/new" class="sidebar-new-gallery" data-link><span>${icon("plus")}</span><strong>New</strong></a>
+          <a href="/galleries/new" class="sidebar-new-gallery" data-link><span>${icon("plus")}</span><strong>New Gallery</strong></a>
         </section>
         ${popularTags.length ? `<section class="sidebar-section sidebar-tags"><h2>Popular Tags</h2><div class="sidebar-tag-list">${popularTags.map((tag) => `<a href="/tags/${encodePath(tag.tag)}" data-link><span>#${escapeHtml(tag.tag)}</span><small>${escapeHtml(String(tag.count || 0))}</small></a>`).join("")}</div></section>` : ""}
         <div class="sidebar-foot">
+          ${installButton()}
           ${state.me?.role === "admin" ? `<nav class="admin-nav" aria-label="Admin"><a href="/admin" ${location.pathname === "/admin" ? 'aria-current="page"' : ""} data-link>Admin</a><a href="/admin/invites" ${location.pathname === "/admin/invites" ? 'aria-current="page"' : ""} data-link>Invites</a></nav>` : ""}
           <p class="rights-note">${escapeHtml(state.instance.content_notice || "Uploaded user content remains owned by the uploader or rights holder.")} Powered by the open source <a href="${UPSTREAM_SOURCE_URL}" rel="noreferrer">QuietCollective project</a>.</p>
           ${source}
@@ -63,8 +65,7 @@ function pageShell(content, options = {}) {
       <main class="main-column">
         <header class="topbar">
           ${iconButton("menu", "Menu", "icon-button mobile-menu", "data-menu type=button")}
-          <div><strong>${escapeHtml(options.kicker || state.instance.name || "QuietCollective")}</strong></div>
-          <div class="topbar-actions">${state.me ? `${installButton()}${notificationBell()}<a href="/me/profile" class="user-chip" data-link>${avatar(state.me)}<span>${escapeHtml(state.me.handle)}</span></a>${button("Log out", "button ghost", "data-logout")}` : link("/login", "Log in", "button")}</div>
+          <div class="topbar-actions">${state.me ? `${notificationBell()}<a href="/me/profile" class="user-chip" data-link>${avatar(state.me)}<span>${escapeHtml(state.me.handle)}</span></a>` : link("/login", "Log in", "button")}</div>
         </header>
         <div class="content">${content}</div>
       </main>

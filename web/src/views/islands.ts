@@ -18,6 +18,7 @@ export function galleryDetailView({ id, gallery, works, comments, members }) {
     gallery,
     works,
     commentsHtml: commentsPanel("gallery", id, comments),
+    reactionButtonHtml: reactionButton("gallery", id, gallery.reactions),
     members,
   });
 }

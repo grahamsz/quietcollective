@@ -19,7 +19,7 @@ import {
   state,
   toast,
 } from "../app/core";
-import { bindCommentForm, bindVersionOverlay } from "../app/comments";
+import { bindCommentForm, bindVersionOverlay, highlightLinkedComment } from "../app/comments";
 import { addCollaborators, bindCollaboratorRows, collaboratorPayloads } from "../app/collaborators";
 import { currentWorkGallery, workCrosspostGalleryModalView, workDetailView, workVersionsView } from "../views/islands";
 
@@ -54,6 +54,7 @@ async function renderWork(id) {
   bindFeedbackRequestModal();
   bindFeedbackToggle(id);
   bindDeleteWork();
+  highlightLinkedComment();
 }
 
 async function renderWorkEdit(id) {

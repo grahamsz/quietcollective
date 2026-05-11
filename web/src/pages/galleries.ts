@@ -10,6 +10,7 @@ import {
   enhanceMarkdownEditors,
   ensureAuthed,
   field,
+  formDataObject,
   imageUploadVariants,
   loadGalleries,
   loadRoleSuggestions,
@@ -24,8 +25,9 @@ import {
   toast,
   visibilityHelp,
 } from "../app/core";
-import { bindCommentForm } from "../app/comments";
+import { bindCommentForm, highlightLinkedComment } from "../app/comments";
 import { bindCollaboratorRows, collaboratorPayloads } from "../app/collaborators";
+import { bindMentionAutocomplete } from "../app/mentions";
 import {
   addToGalleryModalView,
   crosspostModalShellView,
@@ -53,16 +55,19 @@ function bindChoiceHelp(scope) {
   const ownershipText = scope?.querySelector?.("[data-ownership-help]");
   const visibility = scope?.querySelector?.("[name=visibility]");
   const visibilityText = scope?.querySelector?.("[data-visibility-help]");
-  ownership?.addEventListener("change", () => {
-    ownershipText.textContent = ownershipHelp(ownership.value);
-    if (ownership.value === "whole_server" && visibility) {
+  const syncChoices = () => {
+    const ownershipValue = ownership?.value || "";
+    if (ownershipText && ownership) ownershipText.textContent = ownershipHelp(ownershipValue);
+    if (ownershipValue === "whole_server" && visibility) {
       visibility.value = "server_public";
-      visibilityText.textContent = visibilityHelp("server_public");
     }
-  });
+    if (visibilityText && visibility) visibilityText.textContent = visibilityHelp(visibility.value, ownershipValue);
+  };
+  ownership?.addEventListener("change", syncChoices);
   visibility?.addEventListener("change", () => {
-    visibilityText.textContent = visibilityHelp(visibility.value);
+    if (visibilityText) visibilityText.textContent = visibilityHelp(visibility.value, ownership?.value || "");
   });
+  syncChoices();
 }
 
 async function renderGallery(id) {
@@ -75,6 +80,7 @@ async function renderGallery(id) {
   bindCreateWork(id, gallery);
   bindGalleryDropSurface();
   bindCommentForm("gallery", id);
+  highlightLinkedComment();
 }
 
 function bindCreateWork(galleryId, gallery) {
@@ -281,6 +287,27 @@ async function renderGallerySettings(id) {
     renderRoute();
   });
   bindChoiceHelp(document.querySelector("#gallery-settings-form"));
+  bindGalleryMemberForm(id);
+}
+
+function bindGalleryMemberForm(id) {
+  const form = document.querySelector("#gallery-member-form");
+  if (!form) return;
+  bindMentionAutocomplete(form);
+  form.addEventListener("submit", async (event) => {
+    event.preventDefault();
+    const submit = form.querySelector("[type=submit]");
+    submit?.setAttribute("disabled", "disabled");
+    try {
+      await api(`/api/galleries/${encodePath(id)}/members`, { method: "POST", body: formDataObject(form) });
+      toast("Member added");
+      renderRoute();
+    } catch (error) {
+      toast(error.message, "error");
+    } finally {
+      submit?.removeAttribute("disabled");
+    }
+  });
 }
 
 export { renderGallery, renderGallerySettings, renderNewGallery };

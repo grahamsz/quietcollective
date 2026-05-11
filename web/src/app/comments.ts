@@ -20,12 +20,53 @@ function commentArticle(comment, options = {}) {
   const author = commentAuthor(comment);
   const replyButton = options.replyButton !== false;
   const metaExtras = typeof options.metaExtras === "function" ? options.metaExtras(comment) : "";
-  return `<article class="comment-card${comment.parent_comment_id ? " is-reply" : ""}"><div class="meta-row"><strong>@${escapeHtml(author)}</strong><span>${escapeHtml(relativeTime(comment.created_at))}</span>${metaExtras}</div>${commentReplyContext(comment)}<div class="description markdown-body">${renderMarkdown(comment.body)}</div><div class="comment-actions">${reactionButton("comment", comment.id, comment.reactions)}${replyButton ? button("Reply", "button ghost", `data-reply-comment="${escapeHtml(comment.id)}" data-reply-author="${escapeHtml(author)}"`) : ""}</div></article>`;
+  const commentId = escapeHtml(comment.id);
+  return `<article id="comment-${commentId}" class="comment-card${comment.parent_comment_id ? " is-reply" : ""}" data-comment-id="${commentId}"><div class="meta-row"><strong>@${escapeHtml(author)}</strong><span>${escapeHtml(relativeTime(comment.created_at))}</span>${metaExtras}</div>${commentReplyContext(comment)}<div class="description markdown-body">${renderMarkdown(comment.body)}</div><div class="comment-actions">${reactionButton("comment", comment.id, comment.reactions)}${replyButton ? button("Reply", "button ghost", `data-reply-comment="${escapeHtml(comment.id)}" data-reply-author="${escapeHtml(author)}"`) : ""}</div></article>`;
+}
+
+function linkedCommentIdFromHash() {
+  if (!location.hash.startsWith("#comment-")) return "";
+  const raw = location.hash.slice("#comment-".length);
+  try {
+    return decodeURIComponent(raw);
+  } catch {
+    return raw;
+  }
+}
+
+function linkedHighlightTargetFromHash() {
+  const commentId = linkedCommentIdFromHash();
+  if (commentId) return { elementId: `comment-${commentId}`, className: "is-comment-target" };
+  if (!location.hash.startsWith("#heart-")) return null;
+  const raw = location.hash.slice("#heart-".length);
+  try {
+    return { elementId: `heart-${decodeURIComponent(raw)}`, className: "is-heart-target" };
+  } catch {
+    return { elementId: `heart-${raw}`, className: "is-heart-target" };
+  }
+}
+
+function highlightLinkedComment() {
+  const target = linkedHighlightTargetFromHash();
+  if (!target) return;
+  window.requestAnimationFrame(() => {
+    window.requestAnimationFrame(() => {
+      const element = document.getElementById(target.elementId);
+      if (!element) return;
+      const reducedMotion = window.matchMedia?.("(prefers-reduced-motion: reduce)")?.matches;
+      element.classList.remove(target.className);
+      void element.offsetWidth;
+      element.classList.add(target.className);
+      element.scrollIntoView({ block: "center", behavior: reducedMotion ? "auto" : "smooth" });
+      window.setTimeout(() => element.classList.remove(target.className), 2400);
+    });
+  });
 }
 
 /** Renders a generic comment list and form for gallery and profile pages. */
 function commentsPanel(targetType, targetId, comments) {
-  return panel("Comments", `<div class="grid">${(comments || []).map((comment) => commentArticle(comment)).join("") || empty("No comments yet.")}<form class="form comment-form" data-target-type="${escapeHtml(targetType)}" data-target-id="${escapeHtml(targetId)}"><input type="hidden" name="parent_comment_id"><div class="replying-to" data-replying-to hidden><span></span>${button("Cancel", "button ghost", "type=button data-cancel-reply")}</div><div class="form-row"><label>Add comment</label><textarea name="body" required data-markdown-editor data-target-type="${escapeHtml(targetType)}" data-target-id="${escapeHtml(targetId)}"></textarea>${markdownHint()}</div>${button("Post comment", "button primary", "type=submit")}</form></div>`);
+  const title = targetType === "gallery" ? "Comments on Gallery" : "Comments";
+  return panel(title, `<div class="grid">${(comments || []).map((comment) => commentArticle(comment)).join("") || empty("No comments yet.")}<form class="form comment-form" data-target-type="${escapeHtml(targetType)}" data-target-id="${escapeHtml(targetId)}"><input type="hidden" name="parent_comment_id"><div class="replying-to" data-replying-to hidden><span></span>${button("Cancel", "button ghost", "type=button data-cancel-reply")}</div><div class="form-row"><label>Add comment</label><textarea name="body" required data-markdown-editor data-target-type="${escapeHtml(targetType)}" data-target-id="${escapeHtml(targetId)}"></textarea>${markdownHint()}</div>${button("Post comment", "button primary", "type=submit")}</form></div>`);
 }
 
 /** Renders work comments with version badges for the work detail page. */
@@ -83,4 +124,4 @@ function bindVersionOverlay(versions = []) {
 }
 
 
-export { bindCommentForm, bindVersionOverlay, commentArticle, commentsPanel, workCommentsPanel };
+export { bindCommentForm, bindVersionOverlay, commentArticle, commentsPanel, highlightLinkedComment, workCommentsPanel };

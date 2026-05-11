@@ -200,15 +200,18 @@ async function isAdmin(db: D1Database, userId: string) {
   return row?.role === "admin";
 }
 
+function galleryServerVisible(gallery: Pick<GalleryRow, "visibility" | "ownership_type" | "whole_server_upload">) {
+  return gallery.ownership_type === "whole_server" || !!gallery.whole_server_upload || gallery.visibility === "server_public";
+}
+
 async function galleryCapabilities(db: D1Database, user: AppUser, galleryId: string): Promise<GalleryCapabilities> {
   const gallery = await db.prepare("SELECT * FROM galleries WHERE id = ?").bind(galleryId).first<GalleryRow>();
   if (!gallery) return EMPTY_CAPABILITIES;
   if (ownsGallery(user, gallery)) return OWNER_CAPABILITIES;
-  const admin = user.role === "admin";
   const wholeServerUpload = !!gallery.whole_server_upload || gallery.ownership_type === "whole_server";
   const baseCaps = wholeServerUpload
     ? { ...EMPTY_CAPABILITIES, view: true, upload_work: true, comment: true }
-    : admin || gallery.visibility === "server_public"
+    : gallery.visibility === "server_public"
       ? { ...EMPTY_CAPABILITIES, view: true, comment: true }
       : { ...EMPTY_CAPABILITIES };
 
@@ -263,14 +266,26 @@ async function workCapabilities(db: D1Database, user: AppUser, workId: string) {
     { ...EMPTY_CAPABILITIES },
   );
   const collab = await db.prepare(
-    "SELECT can_edit, can_version, can_comment FROM work_collaborators WHERE work_id = ? AND user_id = ?",
-  ).bind(workId, user.id).first<{ can_edit: number; can_version: number; can_comment: number }>();
-  const resolved = resolveWorkCapabilities({ galleryCaps, work, user, collaborator: collab });
+    `SELECT COUNT(*) AS row_count,
+            MAX(can_edit) AS can_edit,
+            MAX(can_version) AS can_version,
+            MAX(can_comment) AS can_comment
+     FROM work_collaborators
+     WHERE work_id = ? AND user_id = ?`,
+  ).bind(workId, user.id).first<{ row_count: number; can_edit: number | null; can_version: number | null; can_comment: number | null }>();
+  const collaborator = collab && collab.row_count > 0
+    ? {
+        can_edit: collab.can_edit || 0,
+        can_version: collab.can_version || 0,
+        can_comment: collab.can_comment || 0,
+      }
+    : null;
+  const resolved = resolveWorkCapabilities({ galleryCaps, work, user, collaborator });
   return { exists: true, work, ...resolved };
 }
 
 function galleryVisibilityRank(gallery: Pick<GalleryRow, "visibility" | "ownership_type" | "whole_server_upload">) {
-  return gallery.visibility === "server_public" || gallery.ownership_type === "whole_server" || !!gallery.whole_server_upload ? 2 : 1;
+  return galleryServerVisible(gallery) ? 2 : 1;
 }
 
 async function workVisibilityRank(db: D1Database, workId: string) {
@@ -358,6 +373,12 @@ async function canCommentTarget(db: D1Database, user: AppUser, targetType: strin
   }
   if (targetType === "comment") return canViewTarget(db, user, targetType, targetId);
   return false;
+}
+
+async function canUserViewTarget(db: D1Database, userId: string, targetType: string | null, targetId: string | null) {
+  if (!targetType || !targetId) return false;
+  const user = await getUserById(db, userId);
+  return user && !user.disabled_at ? canViewTarget(db, user, targetType, targetId) : false;
 }
 
 async function insertEvent(
@@ -491,6 +512,15 @@ async function processEvent(env: Env, eventId: string) {
     }
   }
 
+  if (event.type === "comment.created" && event.target_type === "gallery" && event.target_id) {
+    const gallery = await env.DB.prepare("SELECT owner_user_id, created_by, title FROM galleries WHERE id = ?").bind(event.target_id).first<{ owner_user_id: string; created_by: string; title: string }>();
+    if (gallery) {
+      targets.add(gallery.owner_user_id);
+      targets.add(gallery.created_by);
+      body = `New comment on gallery "${gallery.title}"`;
+    }
+  }
+
   if (event.type === "comment.replied") {
     const parentId = String(payload.parent_comment_id || "");
     const parent = await env.DB.prepare("SELECT author_id FROM comments WHERE id = ?").bind(parentId).first<{ author_id: string }>();
@@ -505,7 +535,9 @@ async function processEvent(env: Env, eventId: string) {
       const mentioned = await env.DB.prepare(
         `SELECT id FROM users WHERE disabled_at IS NULL AND lower(handle) IN (${placeholders})`,
       ).bind(...handles).all<{ id: string }>();
-      for (const row of mentioned.results) targets.add(row.id);
+      for (const row of mentioned.results) {
+        if (await canUserViewTarget(env.DB, row.id, event.target_type, event.target_id)) targets.add(row.id);
+      }
       body = "You were mentioned in a comment";
     }
   }
@@ -550,6 +582,14 @@ async function processEvent(env: Env, eventId: string) {
       if (work) {
         targets.add(work.created_by);
         body = `Someone liked your work "${work.title}"`;
+      }
+    }
+    if (targetType === "gallery") {
+      const gallery = await env.DB.prepare("SELECT owner_user_id, created_by, title FROM galleries WHERE id = ?").bind(targetId).first<{ owner_user_id: string; created_by: string; title: string }>();
+      if (gallery) {
+        targets.add(gallery.owner_user_id);
+        targets.add(gallery.created_by);
+        body = `Someone liked your gallery "${gallery.title}"`;
       }
     }
     if (targetType === "comment") {
@@ -597,7 +637,7 @@ async function galleryAccessUsers(db: D1Database, galleryId: string, capability:
 }
 
 async function serializeGallery(env: Env, user: AppUser, gallery: GalleryRow) {
-  const [pinned, ownership, submitters, viewers, workCount] = await Promise.all([
+  const [pinned, ownership, submitters, viewers, workCount, reaction] = await Promise.all([
     env.DB.prepare("SELECT pinned_at FROM user_gallery_pins WHERE user_id = ? AND gallery_id = ?")
       .bind(user.id, gallery.id)
       .first<{ pinned_at: string }>(),
@@ -620,6 +660,7 @@ async function serializeGallery(env: Env, user: AppUser, gallery: GalleryRow) {
        WHERE work_galleries.gallery_id = ?
          AND works.deleted_at IS NULL`,
     ).bind(gallery.id).first<{ count: number }>(),
+    reactionSummary(env.DB, user, "gallery", gallery.id),
   ]);
   const viewerCount = viewers.length || Number(ownership?.viewer_count || 0);
   const submitterCount = submitters.length;
@@ -647,6 +688,7 @@ async function serializeGallery(env: Env, user: AppUser, gallery: GalleryRow) {
     ...gallery,
     ownership_type: gallery.whole_server_upload ? "whole_server" : gallery.ownership_type,
     capabilities: await galleryCapabilities(env.DB, user, gallery.id),
+    reactions: reaction,
     pinned: !!pinned,
     pinned_at: pinned?.pinned_at || null,
     work_count: workCount?.count || 0,
@@ -667,7 +709,7 @@ async function serializeGallery(env: Env, user: AppUser, gallery: GalleryRow) {
   };
 }
 
-async function reactionSummary(db: D1Database, user: AppUser, targetType: "work" | "comment", targetId: string) {
+async function reactionSummary(db: D1Database, user: AppUser, targetType: "work" | "comment" | "gallery", targetId: string) {
   const row = await db.prepare(
     "SELECT COUNT(*) AS count FROM reactions WHERE target_type = ? AND target_id = ? AND reaction = 'heart'",
   ).bind(targetType, targetId).first<{ count: number }>();

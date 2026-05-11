@@ -28,7 +28,10 @@ export function ProfileView({ me, browserNotificationsHtml }) {
     <section class="view">
       <div class="view-header">
         <div><p class="eyebrow">Profile</p><h1>@{me.handle}</h1></div>
-        <div class="toolbar"><a href="/me/exports" class="button" data-link>Exports</a></div>
+        <div class="toolbar">
+          <a href="/me/exports" class="button" data-link>Exports</a>
+          <button class="button ghost" type="button" data-logout>Log out</button>
+        </div>
       </div>
       <div class="grid two">
         <Panel title="Details">

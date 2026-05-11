@@ -74,7 +74,6 @@ export function resolveWorkCapabilities({
   collaborator?: WorkCollaboratorPermissions;
 }): ResolvedWorkCapabilities {
   const ownsWork = work.created_by === user.id;
-  const admin = user.role === "admin";
   const collaboratorCanEdit = !!collaborator?.can_edit;
   const collaboratorCanVersion = !!collaborator?.can_version;
   const collaboratorCanComment = !!collaborator?.can_comment;
@@ -83,7 +82,7 @@ export function resolveWorkCapabilities({
 
   return {
     caps: {
-      view: galleryCaps.view || ownsWork || admin || !!collaborator,
+      view: galleryCaps.view || ownsWork || !!collaborator,
       edit: canEdit,
       upload_work: galleryCaps.upload_work || ownsWork || collaboratorCanVersion,
       comment: galleryCaps.comment || ownsWork || collaboratorCanComment,

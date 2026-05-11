@@ -1,4 +1,6 @@
 // @ts-nocheck
+import { icon } from "../components/icons";
+import { renderMarkdown } from "../lib/markdown";
 import { imageUploadVariants } from "../lib/utils";
 import { api } from "./api";
 import { bindMarkdownMentionAutocomplete } from "./mentions";
@@ -37,6 +39,27 @@ function bindJsonForm(selector, handler) {
   });
 }
 
+function markdownImageAlt(value) {
+  return String(value || "").replace(/\s+/g, " ").replace(/]/g, "\\]").trim();
+}
+
+function markdownImageUrl(value) {
+  return encodeURI(String(value || "")).replace(/([\\()])/g, "\\$1");
+}
+
+function insertMarkdownImage(editor, imageUrl) {
+  const cm = editor?.codemirror;
+  if (!cm || !imageUrl) return false;
+  const from = cm.getCursor("from");
+  const startIndex = cm.indexFromPos(from);
+  const alt = markdownImageAlt(cm.getSelection());
+  const markdown = `![${alt}](${markdownImageUrl(imageUrl)})`;
+  cm.replaceSelection(markdown);
+  cm.setCursor(cm.posFromIndex(startIndex + markdown.length));
+  cm.focus();
+  return true;
+}
+
 function enhanceMarkdownEditors(scope = document) {
   if (!window.EasyMDE) return;
   scope.querySelectorAll("textarea[data-markdown-editor]:not([data-editor-ready])").forEach((textarea) => {
@@ -47,13 +70,15 @@ function enhanceMarkdownEditors(scope = document) {
     }
     const targetType = textarea.dataset.targetType || textarea.closest("[data-target-type]")?.dataset.targetType || "draft";
     const targetId = textarea.dataset.targetId || textarea.closest("[data-target-id]")?.dataset.targetId || "";
-    const editor = new EasyMDE({
+    let editor;
+    editor = new EasyMDE({
       element: textarea,
       autofocus: false,
       spellChecker: false,
       status: false,
       minHeight: textarea.dataset.editorMinHeight || "130px",
       renderingConfig: { singleLineBreaks: false },
+      previewRender: (plainText) => renderMarkdown(plainText),
       uploadImage: true,
       imageAccept: "image/png, image/jpeg, image/gif, image/webp",
       imageMaxSize: 1024 * 1024 * 10,
@@ -67,22 +92,24 @@ function enhanceMarkdownEditors(scope = document) {
           body.set("target_type", targetType);
           if (targetId) body.set("target_id", targetId);
           const data = await api("/api/markdown-assets", { method: "POST", body });
-          onSuccess(data.url || data.data?.filePath);
+          const imageUrl = data.url || data.data?.filePath;
+          if (!insertMarkdownImage(editor, imageUrl)) onSuccess(imageUrl);
+          textarea.value = editor.value();
         } catch (error) {
           onError(error.message || "Image upload failed");
         }
       },
       toolbar: [
-        { name: "bold", action: EasyMDE.toggleBold, text: "B", title: "Bold" },
-        { name: "italic", action: EasyMDE.toggleItalic, text: "I", title: "Italic" },
-        { name: "quote", action: EasyMDE.toggleBlockquote, text: "Quote", title: "Quote" },
-        { name: "unordered-list", action: EasyMDE.toggleUnorderedList, text: "List", title: "Bulleted list" },
-        { name: "ordered-list", action: EasyMDE.toggleOrderedList, text: "1.", title: "Numbered list" },
+        { name: "bold", action: EasyMDE.toggleBold, icon: icon("bold"), title: "Bold" },
+        { name: "italic", action: EasyMDE.toggleItalic, icon: icon("italic"), title: "Italic" },
+        { name: "quote", action: EasyMDE.toggleBlockquote, icon: icon("quote"), title: "Quote" },
+        { name: "unordered-list", action: EasyMDE.toggleUnorderedList, icon: icon("list"), title: "Bulleted list" },
+        { name: "ordered-list", action: EasyMDE.toggleOrderedList, icon: icon("list-ordered"), title: "Numbered list" },
         "|",
-        { name: "link", action: EasyMDE.drawLink, text: "Link", title: "Link" },
-        { name: "upload-image", action: EasyMDE.drawUploadedImage, text: "Image", title: "Upload image" },
+        { name: "link", action: EasyMDE.drawLink, icon: icon("link"), title: "Link" },
+        { name: "upload-image", action: EasyMDE.drawUploadedImage, icon: icon("image"), title: "Upload image" },
         "|",
-        { name: "preview", action: EasyMDE.togglePreview, text: "Preview", title: "Preview" },
+        { name: "preview", action: EasyMDE.togglePreview, icon: icon("eye"), title: "Preview", noDisable: true },
       ],
     });
     textarea._easyMDE = editor;

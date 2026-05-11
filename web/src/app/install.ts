@@ -9,7 +9,7 @@ function standaloneMode() {
 
 function installButton() {
   if (standaloneMode()) return "";
-  return `<button class="icon-button install-button" type="button" data-install-app hidden aria-label="Install app" title="Install app">${icon("download")}</button>`;
+  return `<button class="sidebar-install-app install-button" type="button" data-install-app hidden aria-label="Install app" title="Install app"><span>${icon("download")}</span><strong>Install App</strong></button>`;
 }
 
 function updateInstallButtons() {
