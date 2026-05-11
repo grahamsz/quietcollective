@@ -1,0 +1,30 @@
+{
+  "name": "quietcollective",
+  "private": true,
+  "description": "AGPL private gallery, critique, and collaboration Cloudflare app.",
+  "type": "module",
+  "scripts": {
+    "web:dev": "wrangler dev",
+    "web:build": "node scripts/check-public.mjs",
+    "web:typecheck": "node scripts/check-public.mjs",
+    "worker:typecheck": "tsc -p worker/tsconfig.json --noEmit",
+    "verify": "npm run web:build && npm run worker:typecheck",
+    "dev": "wrangler dev",
+    "deploy": "npm run verify && npm run d1:migrations:apply:remote && wrangler deploy",
+    "types": "wrangler types",
+    "d1:migrations:apply": "wrangler d1 migrations apply quietcollective",
+    "d1:migrations:apply:remote": "wrangler d1 migrations apply quietcollective --remote"
+  },
+  "dependencies": {
+    "bcryptjs": "^3.0.3",
+    "easymde": "^2.21.0",
+    "hono": "^4.12.15",
+    "ulid": "^3.0.2"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "^4.20260509.0",
+    "typescript": "^5.8.3",
+    "wrangler": "4.40.3"
+  },
+  "license": "AGPL-3.0-or-later"
+}

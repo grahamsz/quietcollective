@@ -1,0 +1,47 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "quietcollective",
+  "main": "worker/src/index.ts",
+  "compatibility_date": "2026-05-01",
+  "assets": {
+    "directory": "public",
+    "binding": "ASSETS",
+    "not_found_handling": "single-page-application",
+    "run_worker_first": [
+      "/api/*"
+    ]
+  },
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "quietcollective",
+      "database_id": "00000000-0000-0000-0000-000000000000",
+      "migrations_dir": "migrations"
+    }
+  ],
+  "r2_buckets": [
+    {
+      "binding": "MEDIA",
+      "bucket_name": "quietcollective-media"
+    }
+  ],
+  "queues": {
+    "producers": [
+      {
+        "binding": "JOBS",
+        "queue": "quietcollective-jobs"
+      }
+    ],
+    "consumers": [
+      {
+        "queue": "quietcollective-jobs",
+        "max_batch_size": 5,
+        "max_batch_timeout": 30
+      }
+    ]
+  },
+  "vars": {
+    "INSTANCE_NAME": "QuietCollective",
+    "SOURCE_CODE_URL": ""
+  }
+}

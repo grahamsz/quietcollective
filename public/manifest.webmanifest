@@ -1,0 +1,17 @@
+{
+  "name": "QuietCollective",
+  "short_name": "QuietCollective",
+  "description": "Private gallery, critique, and collaboration space for small artist communities.",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "background_color": "#fbfcfa",
+  "theme_color": "#24302b",
+  "icons": [
+    {
+      "src": "/icon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml"
+    }
+  ]
+}
