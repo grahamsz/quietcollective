@@ -1109,6 +1109,25 @@ function inviteUsable(invite: Awaited<ReturnType<typeof inviteFromToken>>) {
   return true;
 }
 
+function inviteExpiredOrRevoked(invite: Awaited<ReturnType<typeof inviteFromToken>>) {
+  if (!invite) return true;
+  if (invite.revoked_at) return true;
+  if (invite.expires_at && Date.parse(invite.expires_at) < Date.now()) return true;
+  return false;
+}
+
+function inviteAcceptError(error: unknown) {
+  const message = error instanceof Error ? error.message : String(error || "");
+  if (message.includes("UNIQUE constraint failed: users.email") || message.includes("UNIQUE constraint failed: users.handle")) {
+    return { message: "Email or handle is already in use. Try logging in.", status: 409 };
+  }
+  if (message.includes("CHECK constraint failed: use_count <= max_uses")) {
+    return { message: "Invite is no longer available.", status: 409 };
+  }
+  console.error("invite accept failed", error);
+  return { message: "Could not accept invite.", status: 500 };
+}
+
 app.get("/api/invites/:token", async (c) => {
   const invite = await inviteFromToken(c.env.DB, c.req.param("token"));
   if (!invite || !inviteUsable(invite)) return c.json({ valid: false }, 404);
@@ -1123,7 +1142,7 @@ app.get("/api/invites/:token", async (c) => {
 
 app.post("/api/invites/:token/accept", async (c) => {
   const invite = await inviteFromToken(c.env.DB, c.req.param("token"));
-  if (!invite || !inviteUsable(invite)) return c.json({ error: "Invite is not available" }, 404);
+  if (inviteExpiredOrRevoked(invite)) return c.json({ error: "Invite is not available" }, 404);
   const body = await readBody(c);
   const email = stringField(body.email).toLowerCase();
   const password = stringField(body.password);
@@ -1133,22 +1152,47 @@ app.post("/api/invites/:token/accept", async (c) => {
     return c.json({ error: "Email, handle, and a password of at least 10 characters are required" }, 400);
   }
 
+  const existingUsers = await c.env.DB.prepare("SELECT * FROM users WHERE email = ? OR handle = ?")
+    .bind(email, handle)
+    .all<AppUser & { password_hash: string }>();
+  const exactExistingUser = existingUsers.results.find((user) => user.email === email && user.handle === handle && !user.disabled_at);
+  if (exactExistingUser && existingUsers.results.length === 1) {
+    const acceptance = await c.env.DB.prepare("SELECT id FROM invite_acceptances WHERE invite_id = ? AND accepted_by = ?")
+      .bind(invite!.id, exactExistingUser.id)
+      .first<{ id: string }>();
+    if (acceptance && await bcrypt.compare(password, exactExistingUser.password_hash)) {
+      const session = await createSession(exactExistingUser.id, c.env);
+      c.header("Set-Cookie", sessionCookie(session));
+      return c.json({ token: session, user: publicUser(exactExistingUser, await getTags(c.env.DB, exactExistingUser.id)), duplicate: true });
+    }
+  }
+  if (existingUsers.results.length) {
+    return c.json({ error: "Email or handle is already in use. Try logging in." }, 409);
+  }
+
+  if (!inviteUsable(invite)) return c.json({ error: "Invite is not available" }, 404);
+
   const id = ulid();
   const timestamp = now();
-  await c.env.DB.batch([
-    c.env.DB.prepare(
-      `INSERT INTO users
-         (id, email, password_hash, role, display_name, handle, bio, links_json, created_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, '', '[]', ?, ?)`,
-    ).bind(id, email, await bcrypt.hash(password, 10), invite.role_on_join, displayName, handle, timestamp, timestamp),
-    c.env.DB.prepare("UPDATE invites SET use_count = use_count + 1, last_used_at = ?, updated_at = ? WHERE id = ?").bind(timestamp, timestamp, invite.id),
-    c.env.DB.prepare(
-      "INSERT INTO invite_acceptances (id, invite_id, accepted_by, accepted_email, role_granted, accepted_at) VALUES (?, ?, ?, ?, ?, ?)",
-    ).bind(ulid(), invite.id, id, email, invite.role_on_join, timestamp),
-  ]);
+  try {
+    await c.env.DB.batch([
+      c.env.DB.prepare(
+        `INSERT INTO users
+           (id, email, password_hash, role, display_name, handle, bio, links_json, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, '', '[]', ?, ?)`,
+      ).bind(id, email, await bcrypt.hash(password, 10), invite!.role_on_join, displayName, handle, timestamp, timestamp),
+      c.env.DB.prepare("UPDATE invites SET use_count = use_count + 1, last_used_at = ?, updated_at = ? WHERE id = ?").bind(timestamp, timestamp, invite!.id),
+      c.env.DB.prepare(
+        "INSERT INTO invite_acceptances (id, invite_id, accepted_by, accepted_email, role_granted, accepted_at) VALUES (?, ?, ?, ?, ?, ?)",
+      ).bind(ulid(), invite!.id, id, email, invite!.role_on_join, timestamp),
+    ]);
+  } catch (error) {
+    const acceptError = inviteAcceptError(error);
+    return c.json({ error: acceptError.message }, acceptError.status as 409 | 500);
+  }
 
-  await insertEvent(c.env, "user.joined", id, "user", id);
-  await insertEvent(c.env, "invite.accepted", id, "invite", invite.id, "user", id, { invite_id: invite.id });
+  await insertEvent(c.env, "user.joined", id, "user", id).catch((error) => console.error("user.joined event failed", error));
+  await insertEvent(c.env, "invite.accepted", id, "invite", invite!.id, "user", id, { invite_id: invite!.id }).catch((error) => console.error("invite.accepted event failed", error));
   const session = await createSession(id, c.env);
   c.header("Set-Cookie", sessionCookie(session));
   return c.json({ token: session, user: publicUser((await getUserById(c.env.DB, id))!, []) }, 201);
