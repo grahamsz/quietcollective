@@ -712,6 +712,59 @@ function serializeVersion(version: WorkVersionRow) {
   };
 }
 
+type GalleryWorkListRow = WorkRow & {
+  version_id: string | null;
+  version_work_id: string | null;
+  version_number: number | null;
+  body_markdown: string | null;
+  body_plain: string | null;
+  original_r2_key: string | null;
+  original_content_type: string | null;
+  preview_r2_key: string | null;
+  preview_content_type: string | null;
+  thumbnail_r2_key: string | null;
+  thumbnail_content_type: string | null;
+  original_filename: string | null;
+  version_created_by: string | null;
+  version_created_at: string | null;
+  heart_count: number;
+  hearted_by_me: number;
+  feedback_dismissed_at: string | null;
+};
+
+function serializeGalleryWorkListItem(row: GalleryWorkListRow, caps: GalleryCapabilities) {
+  const currentVersion = row.version_id ? serializeVersion({
+    id: row.version_id,
+    work_id: row.version_work_id || row.id,
+    version_number: row.version_number || 1,
+    body_markdown: row.body_markdown,
+    body_plain: row.body_plain,
+    original_r2_key: row.original_r2_key,
+    original_content_type: row.original_content_type,
+    preview_r2_key: row.preview_r2_key,
+    preview_content_type: row.preview_content_type,
+    thumbnail_r2_key: row.thumbnail_r2_key,
+    thumbnail_content_type: row.thumbnail_content_type,
+    original_filename: row.original_filename,
+    created_by: row.version_created_by || row.created_by,
+    created_at: row.version_created_at || row.created_at,
+  }) : null;
+
+  return {
+    ...row,
+    feedback_requested: !!row.feedback_requested,
+    feedback_dismissed: !!row.feedback_dismissed_at,
+    feedback_dismissed_at: row.feedback_dismissed_at,
+    reactions: {
+      heart_count: row.heart_count || 0,
+      hearted_by_me: !!row.hearted_by_me,
+    },
+    capabilities: { ...caps, view: true },
+    can_create_version: caps.upload_work || caps.edit,
+    current_version: currentVersion,
+  };
+}
+
 async function putR2File(bucket: R2Bucket, key: string, file: File, metadata: Record<string, string> = {}) {
   await bucket.put(key, file.stream(), {
     httpMetadata: { contentType: file.type || "application/octet-stream" },
@@ -1209,6 +1262,7 @@ app.delete("/api/galleries/:id/pin", async (c) => {
 app.get("/api/galleries/:id", async (c) => {
   const gate = await assertGalleryCapability(c, c.req.param("id"), "view");
   if (!gate.ok) return gate.response;
+  const user = currentUser(c);
   const gallery = await c.env.DB.prepare("SELECT * FROM galleries WHERE id = ?").bind(c.req.param("id")).first<GalleryRow>();
   if (!gallery) return c.json({ error: "Not found" }, 404);
   const [members, works] = await Promise.all([
@@ -1218,19 +1272,42 @@ app.get("/api/galleries/:id", async (c) => {
        WHERE gallery_id = ? ORDER BY users.handle COLLATE NOCASE`,
     ).bind(gallery.id).all(),
     c.env.DB.prepare(
-      `SELECT works.*
+      `SELECT works.*,
+              work_versions.id AS version_id,
+              work_versions.work_id AS version_work_id,
+              work_versions.version_number AS version_number,
+              work_versions.body_markdown AS body_markdown,
+              work_versions.body_plain AS body_plain,
+              work_versions.original_r2_key AS original_r2_key,
+              work_versions.original_content_type AS original_content_type,
+              work_versions.preview_r2_key AS preview_r2_key,
+              work_versions.preview_content_type AS preview_content_type,
+              work_versions.thumbnail_r2_key AS thumbnail_r2_key,
+              work_versions.thumbnail_content_type AS thumbnail_content_type,
+              work_versions.original_filename AS original_filename,
+              work_versions.created_by AS version_created_by,
+              work_versions.created_at AS version_created_at,
+              COUNT(reactions.id) AS heart_count,
+              MAX(CASE WHEN reactions.user_id = ? THEN 1 ELSE 0 END) AS hearted_by_me,
+              feedback_request_dismissals.dismissed_at AS feedback_dismissed_at
        FROM works
        JOIN work_galleries ON work_galleries.work_id = works.id
+       LEFT JOIN work_versions ON work_versions.id = works.current_version_id
+       LEFT JOIN reactions ON reactions.target_type = 'work'
+         AND reactions.target_id = works.id
+         AND reactions.reaction = 'heart'
+       LEFT JOIN feedback_request_dismissals ON feedback_request_dismissals.work_id = works.id
+         AND feedback_request_dismissals.user_id = ?
        WHERE work_galleries.gallery_id = ? AND works.deleted_at IS NULL
+       GROUP BY works.id
        ORDER BY work_galleries.updated_at DESC, works.updated_at DESC`,
-    ).bind(gallery.id).all<WorkRow>(),
+    ).bind(user.id, user.id, gallery.id).all<GalleryWorkListRow>(),
   ]);
-  const visibleWorks = [];
-  for (const work of works.results) {
-    const serialized = await serializeWork(c.env.DB, currentUser(c), work);
-    if (serialized.capabilities.view) visibleWorks.push(serialized);
-  }
-  return c.json({ gallery: await serializeGallery(c.env.DB, currentUser(c), gallery), members: members.results, works: visibleWorks });
+  return c.json({
+    gallery: await serializeGallery(c.env.DB, user, gallery),
+    members: members.results,
+    works: works.results.map((work) => serializeGalleryWorkListItem(work, gate.caps)),
+  });
 });
 
 app.patch("/api/galleries/:id", async (c) => {
