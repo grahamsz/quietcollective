@@ -9,6 +9,7 @@ node_modules/
 public/assets/
 public/*.png
 dist/
+test-results/
 .wrangler/
 .env
 .env.*

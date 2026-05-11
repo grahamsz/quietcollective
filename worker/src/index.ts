@@ -3,6 +3,7 @@ import { cors } from "hono/cors";
 import { logger } from "hono/logger";
 import * as bcrypt from "bcryptjs";
 import { ulid } from "ulid";
+import { resolveWorkCapabilities } from "./permissions";
 import type { AppUser, Env, GalleryCapabilities, GalleryRow, WorkRow, WorkVersionRow } from "./types";
 
 type Variables = {
@@ -437,20 +438,8 @@ async function workCapabilities(db: D1Database, user: AppUser, workId: string) {
   const collab = await db.prepare(
     "SELECT can_edit, can_version, can_comment FROM work_collaborators WHERE work_id = ? AND user_id = ?",
   ).bind(workId, user.id).first<{ can_edit: number; can_version: number; can_comment: number }>();
-
-  const caps = { ...galleryCaps };
-  if (collab) {
-    caps.view = true;
-    caps.edit = caps.edit || !!collab.can_edit;
-    caps.upload_work = caps.upload_work || !!collab.can_version;
-    caps.comment = caps.comment || !!collab.can_comment;
-  }
-
-  if (work.created_by === user.id || user.role === "admin") {
-    Object.assign(caps, OWNER_CAPABILITIES);
-  }
-
-  return { exists: true, work, caps, version: caps.edit || work.created_by === user.id || user.role === "admin" || !!collab?.can_version };
+  const resolved = resolveWorkCapabilities({ galleryCaps, work, user, collaborator: collab });
+  return { exists: true, work, ...resolved };
 }
 
 async function assertGalleryCapability(
@@ -799,9 +788,20 @@ type GalleryWorkListRow = WorkRow & {
   heart_count: number;
   hearted_by_me: number;
   feedback_dismissed_at: string | null;
+  collaborator_can_edit: number | null;
+  collaborator_can_version: number | null;
+  collaborator_can_comment: number | null;
 };
 
-async function serializeGalleryWorkListItem(env: Env, row: GalleryWorkListRow, caps: GalleryCapabilities) {
+async function serializeGalleryWorkListItem(env: Env, user: AppUser, row: GalleryWorkListRow, caps: GalleryCapabilities) {
+  const collaborator = row.collaborator_can_edit == null && row.collaborator_can_version == null && row.collaborator_can_comment == null
+    ? null
+    : {
+        can_edit: row.collaborator_can_edit || 0,
+        can_version: row.collaborator_can_version || 0,
+        can_comment: row.collaborator_can_comment || 0,
+      };
+  const resolved = resolveWorkCapabilities({ galleryCaps: caps, work: row, user, collaborator });
   const currentVersion = row.version_id ? await serializeVersion(env, {
     id: row.version_id,
     work_id: row.version_work_id || row.id,
@@ -828,8 +828,8 @@ async function serializeGalleryWorkListItem(env: Env, row: GalleryWorkListRow, c
       heart_count: row.heart_count || 0,
       hearted_by_me: !!row.hearted_by_me,
     },
-    capabilities: { ...caps, view: true },
-    can_create_version: caps.upload_work || caps.edit,
+    capabilities: resolved.caps,
+    can_create_version: resolved.version,
     current_version: currentVersion,
   };
 }
@@ -1418,7 +1418,10 @@ app.get("/api/galleries/:id", async (c) => {
               work_versions.created_at AS version_created_at,
               COUNT(reactions.id) AS heart_count,
               MAX(CASE WHEN reactions.user_id = ? THEN 1 ELSE 0 END) AS hearted_by_me,
-              feedback_request_dismissals.dismissed_at AS feedback_dismissed_at
+              feedback_request_dismissals.dismissed_at AS feedback_dismissed_at,
+              current_work_collaborator.can_edit AS collaborator_can_edit,
+              current_work_collaborator.can_version AS collaborator_can_version,
+              current_work_collaborator.can_comment AS collaborator_can_comment
        FROM works
        JOIN work_galleries ON work_galleries.work_id = works.id
        LEFT JOIN work_versions ON work_versions.id = works.current_version_id
@@ -1427,15 +1430,17 @@ app.get("/api/galleries/:id", async (c) => {
          AND reactions.reaction = 'heart'
        LEFT JOIN feedback_request_dismissals ON feedback_request_dismissals.work_id = works.id
          AND feedback_request_dismissals.user_id = ?
+       LEFT JOIN work_collaborators AS current_work_collaborator ON current_work_collaborator.work_id = works.id
+         AND current_work_collaborator.user_id = ?
        WHERE work_galleries.gallery_id = ? AND works.deleted_at IS NULL
        GROUP BY works.id
        ORDER BY work_galleries.updated_at DESC, works.updated_at DESC`,
-    ).bind(user.id, user.id, gallery.id).all<GalleryWorkListRow>(),
+    ).bind(user.id, user.id, user.id, gallery.id).all<GalleryWorkListRow>(),
   ]);
   return c.json({
     gallery: await serializeGallery(c.env, user, gallery),
     members: members.results,
-    works: await Promise.all(works.results.map((work) => serializeGalleryWorkListItem(c.env, work, gate.caps))),
+    works: await Promise.all(works.results.map((work) => serializeGalleryWorkListItem(c.env, user, work, gate.caps))),
   });
 });
 
