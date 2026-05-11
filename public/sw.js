@@ -1,4 +1,4 @@
-const CACHE_NAME = "quietcollective-shell-v11";
+const CACHE_NAME = "quietcollective-shell-v12";
 const STATIC_PATHS = [
   "/",
   "/index.html",

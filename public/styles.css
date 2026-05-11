@@ -823,6 +823,7 @@ tr:last-child td {
 }
 
 .media-frame {
+  position: relative;
   display: grid;
   min-height: 360px;
   overflow: hidden;
@@ -916,6 +917,8 @@ tr:last-child td {
 }
 
 .media-frame img {
+  position: relative;
+  z-index: 1;
   width: 100%;
   max-height: 76vh;
   object-fit: contain;
@@ -1261,10 +1264,25 @@ tr:last-child td {
 
 .gallery-tile img,
 .image-tile img {
+  position: relative;
+  z-index: 1;
   width: 100%;
   height: 100%;
   object-fit: cover;
   transition: transform 0.18s ease, filter 0.18s ease;
+}
+
+.media-reveal {
+  opacity: 0;
+  transform: translateY(5px);
+}
+
+.media-reveal.is-loaded {
+  opacity: 1;
+  transform: translateY(0);
+  transition:
+    opacity 0.24s ease var(--reveal-delay, 0ms),
+    transform 0.26s ease var(--reveal-delay, 0ms);
 }
 
 .image-grid {
@@ -1308,6 +1326,7 @@ tr:last-child td {
 
 .tile-overlay {
   position: absolute;
+  z-index: 3;
   right: 0;
   bottom: 0;
   left: 0;
@@ -1316,8 +1335,23 @@ tr:last-child td {
   padding: 28px 8px 8px;
   background: linear-gradient(180deg, transparent, rgba(0, 0, 0, 0.84));
   opacity: 0;
+  pointer-events: none;
   transform: translateY(8px);
   transition: opacity 0.16s ease, transform 0.16s ease;
+}
+
+.image-shield {
+  position: absolute;
+  z-index: 2;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.001);
+  pointer-events: auto;
+  user-select: none;
+}
+
+[data-protected-image] {
+  -webkit-user-drag: none;
+  user-select: none;
 }
 
 .gallery-tile:hover .tile-overlay,
@@ -1588,6 +1622,7 @@ tr:last-child td {
 }
 
 .upload-preview {
+  position: relative;
   overflow: hidden;
   margin-bottom: 12px;
   border: 1px solid var(--line);
@@ -1596,6 +1631,8 @@ tr:last-child td {
 }
 
 .upload-preview img {
+  position: relative;
+  z-index: 1;
   width: 100%;
   max-height: 40vh;
   object-fit: contain;

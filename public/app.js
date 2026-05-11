@@ -397,6 +397,7 @@ function bindCommonActions() {
   bindReactionButtons();
   bindNotificationActions();
   bindReplyButtons();
+  bindProtectedMedia();
 }
 
 function bindJsonForm(selector, handler) {
@@ -613,19 +614,19 @@ async function renderInvite(token) {
 }
 
 function galleryMosaic(galleries) {
-  return `<div class="gallery-mosaic">${(galleries || []).sort(newestFirst).map((gallery) => `
-    <a class="gallery-tile ${gallery.cover_image_url ? "" : "is-empty"}" href="/galleries/${gallery.id}" data-link>
-      ${gallery.cover_image_url ? `<img src="${escapeHtml(gallery.cover_image_url)}" alt="">` : `<span>${escapeHtml(initials(gallery.title))}</span>`}
+  return `<div class="gallery-mosaic">${(galleries || []).sort(newestFirst).map((gallery, index) => `
+    <a class="gallery-tile media-reveal ${gallery.cover_image_url ? "" : "is-empty"}" href="/galleries/${gallery.id}" data-link data-media-reveal ${tileRevealStyle(index)}>
+      ${gallery.cover_image_url ? protectedImage(gallery.cover_image_url, gallery.title) : `<span>${escapeHtml(initials(gallery.title))}</span>`}
       <div class="tile-overlay"><strong>${escapeHtml(gallery.title)}</strong><small>${gallery.visibility === "server_public" ? "Whole Server" : "Private"}</small></div>
     </a>
   `).join("")}</div>`;
 }
 
-function imageTile(work) {
+function imageTile(work, index = 0) {
   const version = work.current_version || {};
   const imageUrl = version.thumbnail_url || version.preview_url;
   const hearts = work.reactions?.heart_count || 0;
-  return `<a href="/works/${work.id}" class="image-tile" data-link>${imageUrl ? `<img src="${escapeHtml(imageUrl)}" alt="">` : `<span class="image-placeholder">${escapeHtml(initials(work.title))}</span>`}<div class="tile-overlay"><strong>${escapeHtml(work.title)}</strong><small>${hearts ? `${hearts} heart${hearts === 1 ? "" : "s"}` : "Image"}</small></div></a>`;
+  return `<a href="/works/${work.id}" class="image-tile media-reveal" data-link data-media-reveal ${tileRevealStyle(index)}>${imageUrl ? protectedImage(imageUrl, work.title) : `<span class="image-placeholder">${escapeHtml(initials(work.title))}</span>`}<div class="tile-overlay"><strong>${escapeHtml(work.title)}</strong><small>${hearts ? `${hearts} heart${hearts === 1 ? "" : "s"}` : "Image"}</small></div></a>`;
 }
 
 function imageGrid(works) {
@@ -766,8 +767,9 @@ function bindVersionOverlay(versions = []) {
       if (!version) return;
       const overlay = document.createElement("div");
       overlay.className = "modal-backdrop";
-      overlay.innerHTML = `<section class="modal-panel" role="dialog" aria-modal="true"><div class="panel-header"><h2>Version ${escapeHtml(version.version_number)}</h2><button class="icon-button" data-close-modal aria-label="Close" type="button">x</button></div><div class="panel-body">${version.preview_url ? `<div class="media-frame compact"><img src="${escapeHtml(version.preview_url)}" alt=""></div>` : empty("No preview available.")}<div class="toolbar" style="margin-top:14px">${version.original_url ? `<a class="button" href="${escapeHtml(version.original_url)}">Open original</a>` : ""}</div></div></section>`;
+      overlay.innerHTML = `<section class="modal-panel" role="dialog" aria-modal="true"><div class="panel-header"><h2>Version ${escapeHtml(version.version_number)}</h2><button class="icon-button" data-close-modal aria-label="Close" type="button">x</button></div><div class="panel-body">${version.preview_url ? `<div class="media-frame compact">${protectedImage(version.preview_url)}</div>` : empty("No preview available.")}<div class="toolbar" style="margin-top:14px">${version.original_url ? `<a class="button" href="${escapeHtml(version.original_url)}">Open original</a>` : ""}</div></div></section>`;
       document.body.append(overlay);
+      bindProtectedMedia(overlay);
       overlay.querySelector("[data-close-modal]")?.addEventListener("click", () => overlay.remove());
       overlay.addEventListener("click", (event) => {
         if (event.target === overlay) overlay.remove();
@@ -815,6 +817,38 @@ async function renderGallery(id) {
   bindCreateWork(id);
   bindGalleryDropSurface();
   bindCommentForm("gallery", id);
+}
+
+function protectedImage(src, alt = "") {
+  return `<img src="${escapeHtml(src)}" alt="${escapeHtml(alt)}" draggable="false" loading="lazy" decoding="async" data-protected-image><span class="image-shield" data-media-protect aria-hidden="true"></span>`;
+}
+
+function tileRevealStyle(index) {
+  const delay = Math.round(Math.random() * 140 + (index % 4) * 16);
+  return `style="--reveal-delay:${delay}ms"`;
+}
+
+function bindProtectedMedia(scope = document) {
+  scope.querySelectorAll("[data-media-protect], [data-protected-image]").forEach((element) => {
+    if (element.dataset.protectBound === "true") return;
+    element.dataset.protectBound = "true";
+    element.addEventListener("contextmenu", (event) => event.preventDefault());
+    element.addEventListener("dragstart", (event) => event.preventDefault());
+  });
+  scope.querySelectorAll("[data-media-reveal]").forEach((tile) => {
+    if (tile.dataset.revealBound === "true") return;
+    tile.dataset.revealBound = "true";
+    const image = tile.querySelector("img");
+    const reveal = () => tile.classList.add("is-loaded");
+    if (!image) {
+      reveal();
+    } else if (image.complete) {
+      requestAnimationFrame(reveal);
+    } else {
+      image.addEventListener("load", reveal, { once: true });
+      image.addEventListener("error", reveal, { once: true });
+    }
+  });
 }
 
 function createWorkPanel(galleryId) {
@@ -891,7 +925,7 @@ async function openWorkUploadModal(galleryId, file) {
   const modal = document.createElement("div");
   modal.className = "modal-backdrop";
   modal.dataset.uploadModal = "true";
-  modal.innerHTML = `<section class="modal-panel upload-modal" role="dialog" aria-modal="true"><div class="panel-header"><h2>Add image details</h2><button class="icon-button" data-close-modal aria-label="Close" type="button">x</button></div><div class="panel-body"><div class="upload-preview"><img src="${escapeHtml(previewUrl)}" alt=""></div><form class="form" data-upload-details-form><div class="form-row"><label>Title</label><input name="title" value="${escapeHtml(title)}" placeholder="Defaults to file name"></div><div class="form-row"><label>Description</label><textarea name="description" data-markdown-editor data-target-type="gallery" data-target-id="${escapeHtml(galleryId)}"></textarea>${markdownHint()}</div><div class="form-row"><label>Collaborators</label>${collaboratorCreditRows({ listId: "upload-work-role-options" })}</div><div class="toolbar">${button("Cancel", "button ghost", "type=button data-close-modal")}${button("Upload image", "button primary", "type=submit")}</div></form></div></section>`;
+  modal.innerHTML = `<section class="modal-panel upload-modal" role="dialog" aria-modal="true"><div class="panel-header"><h2>Add image details</h2><button class="icon-button" data-close-modal aria-label="Close" type="button">x</button></div><div class="panel-body"><div class="upload-preview">${protectedImage(previewUrl)}</div><form class="form" data-upload-details-form><div class="form-row"><label>Title</label><input name="title" value="${escapeHtml(title)}" placeholder="Defaults to file name"></div><div class="form-row"><label>Description</label><textarea name="description" data-markdown-editor data-target-type="gallery" data-target-id="${escapeHtml(galleryId)}"></textarea>${markdownHint()}</div><div class="form-row"><label>Collaborators</label>${collaboratorCreditRows({ listId: "upload-work-role-options" })}</div><div class="toolbar">${button("Cancel", "button ghost", "type=button data-close-modal")}${button("Upload image", "button primary", "type=submit")}</div></form></div></section>`;
   const close = () => {
     URL.revokeObjectURL(previewUrl);
     modal.remove();
@@ -899,6 +933,7 @@ async function openWorkUploadModal(galleryId, file) {
     if (input) input.value = "";
   };
   document.body.append(modal);
+  bindProtectedMedia(modal);
   enhanceMarkdownEditors(modal);
   bindCollaboratorRows(modal);
   modal.querySelectorAll("[data-close-modal]").forEach((control) => control.addEventListener("click", close));
@@ -991,7 +1026,7 @@ async function renderWork(id) {
   const version = work.current_version;
   const gallery = currentWorkGallery(work);
   const comments = await api(`/api/works/${encodePath(id)}/comments`).catch(() => ({ comments: [] }));
-  const media = version?.preview_url ? `<div class="media-frame"><img src="${escapeHtml(version.preview_url)}" alt=""></div>` : empty("No image version is available.");
+  const media = version?.preview_url ? `<div class="media-frame">${protectedImage(version.preview_url, work.title)}</div>` : empty("No image version is available.");
   setApp(pageShell(`<section class="view work-view"><div class="view-header"><div><p class="eyebrow"><a href="/galleries/${escapeHtml(gallery.id)}" data-link>${escapeHtml(gallery.title)}</a></p><h1>${escapeHtml(work.title)}</h1><div class="lede markdown-body">${renderMarkdown(work.description || "")}</div><div class="badge-row">${badge("image")}</div></div><div class="toolbar">${reactionButton("work", id, work.reactions)}${work.feedback_requested && !work.feedback_dismissed ? button("Dismiss feedback request", "button ghost", `data-dismiss-feedback="${escapeHtml(id)}"`) : ""}${link(`/works/${id}/versions`, "Versions", "button")}${work.capabilities.edit ? link(`/works/${id}/edit`, "Edit", "button primary") + button("Delete", "button warn", `data-delete-work="${escapeHtml(id)}" data-after-delete="/galleries/${escapeHtml(gallery.id)}"`) : ""}</div></div>${media}<div class="grid two">${panel("Collaborators", (data.collaborators || []).map((collab) => `<article class="comment-card"><h3 class="card-title">${collaboratorLabel(collab)}</h3><p class="description">${escapeHtml(collab.role_label || "collaborator")}</p></article>`).join("") || empty("No collaborators credited yet."))}${workCommentsPanel(id, data.versions || [], comments.comments, version?.id || "")}</div></section>`));
   bindCommentForm("work", id);
   bindVersionOverlay(data.versions || []);
