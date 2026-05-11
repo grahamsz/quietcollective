@@ -32,10 +32,10 @@ function Panel({ title, children, extra = "" }) {
 function GalleryChoiceHelp({ type, value }) {
   const help = type === "ownership"
     ? value === "whole_server"
-      ? "Everyone ownership lets any logged-in member add images. Only the owner, gallery admins, and instance admins can edit gallery settings."
+      ? "Everyone ownership lets any logged-in member add images. Gallery settings are limited to the gallery owner and managers."
       : value === "collaborative"
         ? "Collaborative galleries are meant for invited collaborators. Add members who can upload, edit, or manage collaborators."
-        : "Self-owned galleries are controlled by you. You can still invite people to view or comment."
+        : "Individual galleries are controlled by you. You can still invite people to view or comment."
     : value === "server_public"
       ? "Everyone means any logged-in member of this instance can view it. It is never anonymous public web access."
       : "Private means only you, explicitly added gallery members, and admins can view it.";
@@ -69,7 +69,7 @@ export function NewGalleryView() {
           <div class="form-row">
             <label>Ownership</label>
             <select name="ownership_type">
-              <option value="self">Self-owned</option>
+              <option value="self">Individual</option>
               <option value="collaborative">Collaborative</option>
               <option value="whole_server">Everyone</option>
             </select>
@@ -100,8 +100,10 @@ function CreateWorkPanel({ galleryId }) {
   );
 }
 
-function GalleryMemberCard({ member }) {
+function GalleryMemberCard({ member, gallery }) {
+  const individualGallery = gallery?.ownership_type === "self" && !gallery?.whole_server_upload;
   const capabilities = ["view", "edit", "upload_work", "comment", "manage_collaborators"]
+    .filter((key) => !individualGallery || key === "view" || key === "comment")
     .filter((key) => member[`can_${key}`] || (key === "view" && member.can_view));
   return (
     <article class="member-card">
@@ -116,10 +118,10 @@ function GalleryMembersPanel({ gallery, members }) {
   return (
     <>
       {gallery.ownership_type === "whole_server" ? (
-        <div class="notice compact">Everyone gallery: any logged-in member can post images here. Gallery settings are still limited to gallery admins and instance admins.</div>
+        <div class="notice compact">Everyone gallery: any logged-in member can post images here. Gallery settings are limited to the gallery owner and managers.</div>
       ) : null}
       <div class="grid">
-        {(members || []).length ? members.map((member) => <GalleryMemberCard member={member} key={member.id || member.handle} />) : <Empty message="No explicit gallery members yet." />}
+        {(members || []).length ? members.map((member) => <GalleryMemberCard member={member} gallery={gallery} key={member.id || member.handle} />) : <Empty message="No explicit gallery members yet." />}
       </div>
     </>
   );
@@ -159,7 +161,7 @@ export function GalleryDetailView({ id, gallery, works, commentsHtml, members })
 }
 
 /** TSX block for the add-to-gallery modal opened from a gallery detail route. */
-export function AddToGalleryModalView({ gallery }) {
+export function AddToGalleryModalView({ gallery, canCrosspost = false }) {
   return (
     <section class="modal-panel add-menu-modal" role="dialog" aria-modal="true">
       <div class="panel-header">
@@ -173,7 +175,9 @@ export function AddToGalleryModalView({ gallery }) {
         <div class="add-action-grid">
           <button class="add-action" type="button" data-add-action="upload"><Icon name="upload" /><strong>Upload</strong><span>Choose an image file from this device.</span></button>
           <button class="add-action" type="button" data-add-action="camera"><Icon name="camera" /><strong>Camera</strong><span>Take a new image and add the details.</span></button>
-          <button class="add-action" type="button" data-add-action="crosspost"><Icon name="send" /><strong>Crosspost</strong><span>Add one of your works or collaborator credits.</span></button>
+          {canCrosspost ? (
+            <button class="add-action" type="button" data-add-action="crosspost"><Icon name="send" /><strong>Crosspost</strong><span>Add one of your works or collaborator credits.</span></button>
+          ) : null}
         </div>
         <GalleryAccessRules gallery={gallery || {}} />
       </div>
@@ -322,7 +326,7 @@ export function GallerySettingsView({ id, gallery, works, members }) {
             <div class="form-row">
               <label>Ownership</label>
               <select name="ownership_type" value={gallery.ownership_type}>
-                <option value="self">Self-owned</option>
+                <option value="self">Individual</option>
                 <option value="collaborative">Collaborative</option>
                 <option value="whole_server">Everyone</option>
               </select>

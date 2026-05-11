@@ -51,6 +51,7 @@ export type Work = {
   feedback_requested?: boolean | number | null;
   feedback_dismissed?: boolean | number | null;
   feedback_prompt?: string | null;
+  is_owner?: boolean | number | null;
   created_by_user?: AccessUser | null;
   created_by_handle?: string | null;
   created_at?: string | null;

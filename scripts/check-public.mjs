@@ -5,6 +5,11 @@ const requiredFiles = [
   "public/app.js",
   "public/styles.css",
   "public/sw.js",
+  "public/icon-192.png",
+  "public/icon-512.png",
+  "public/icon-maskable-192.png",
+  "public/icon-maskable-512.png",
+  "public/icon-maskable.svg",
   "public/vendor/easymde/easymde.min.css",
   "public/vendor/easymde/easymde.min.js",
   "public/manifest.webmanifest",
@@ -20,6 +25,27 @@ for (const file of requiredFiles) {
 const serviceWorker = await readFile("public/sw.js", "utf8");
 if (!serviceWorker.includes("/api/") || !serviceWorker.includes("original")) {
   throw new Error("public/sw.js must avoid caching API and original media routes");
+}
+const index = await readFile("public/index.html", "utf8");
+if (!/<meta name="qc-build" content="[a-f0-9]{12}">/.test(index)) {
+  throw new Error("public/index.html must include the build fingerprint meta tag");
+}
+if (
+  !/href="\/manifest\.webmanifest\?v=[a-f0-9]{12}"/.test(index) ||
+  !/href="\/styles\.css\?v=[a-f0-9]{12}"/.test(index) ||
+  !/src="\/app\.js\?v=[a-f0-9]{12}"/.test(index)
+) {
+  throw new Error("public/index.html must reference versioned manifest, app, and stylesheet assets");
+}
+if (!/quietcollective-shell-[a-f0-9]{12}/.test(serviceWorker)) {
+  throw new Error("public/sw.js must use a build-fingerprinted shell cache name");
+}
+const manifest = JSON.parse(await readFile("public/manifest.webmanifest", "utf8"));
+if (manifest.display !== "standalone" || manifest.scope !== "/" || manifest.start_url !== "/" || !manifest.id) {
+  throw new Error("public/manifest.webmanifest must define installable app metadata");
+}
+for (const src of ["/icon-192.png", "/icon-512.png", "/icon-maskable-192.png", "/icon-maskable-512.png"]) {
+  if (!manifest.icons?.some((icon) => icon.src === src)) throw new Error(`public/manifest.webmanifest is missing ${src}`);
 }
 
 console.log("Public app assets are present.");

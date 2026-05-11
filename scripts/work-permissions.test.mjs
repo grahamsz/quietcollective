@@ -36,7 +36,7 @@ const modulePath = await firstExistingPath([
   resolve(outDir, "permissions.js"),
   resolve(outDir, "worker/src/permissions.js"),
 ]);
-const { resolveWorkCapabilities } = await import(pathToFileURL(modulePath));
+const { canCrosspostToGallery, resolveGalleryCapabilities, resolveWorkCapabilities } = await import(pathToFileURL(modulePath));
 
 const ownerCaps = {
   view: true,
@@ -53,11 +53,30 @@ const uploadCaps = {
   comment: true,
   manage_collaborators: false,
 };
+const publicViewCaps = {
+  view: true,
+  edit: false,
+  upload_work: false,
+  comment: true,
+  manage_collaborators: false,
+};
+const delegatedMember = {
+  can_view: 1,
+  can_edit: 1,
+  can_upload_work: 1,
+  can_comment: 1,
+  can_manage_collaborators: 1,
+};
 
 const work = { created_by: "author" };
 const author = { id: "author", role: "member" };
 const galleryEditor = { id: "gallery-editor", role: "member" };
 const admin = { id: "admin", role: "admin" };
+const individualGallery = { owner_user_id: "owner", created_by: "owner", ownership_type: "self", whole_server_upload: 0 };
+const ownIndividualGallery = { owner_user_id: "gallery-editor", created_by: "gallery-editor", ownership_type: "self", whole_server_upload: 0 };
+const collaborativeGallery = { owner_user_id: "owner", created_by: "owner", ownership_type: "collaborative", whole_server_upload: 0 };
+const ownCollaborativeGallery = { owner_user_id: "gallery-editor", created_by: "gallery-editor", ownership_type: "collaborative", whole_server_upload: 0 };
+const everyoneGallery = { owner_user_id: "owner", created_by: "owner", ownership_type: "collaborative", whole_server_upload: 1 };
 
 const checks = [];
 function test(name, fn) {
@@ -93,9 +112,8 @@ test("whole-server upload permission does not imply work edit permission", () =>
   assert.equal(result.crosspost, false);
 });
 
-test("work authors, admins, and explicit work collaborators can still edit", () => {
+test("work authors and explicit work collaborators can still edit", () => {
   assert.equal(resolveWorkCapabilities({ galleryCaps: uploadCaps, work, user: author }).caps.edit, true);
-  assert.equal(resolveWorkCapabilities({ galleryCaps: uploadCaps, work, user: admin }).caps.edit, true);
   assert.equal(
     resolveWorkCapabilities({
       galleryCaps: uploadCaps,
@@ -105,6 +123,21 @@ test("work authors, admins, and explicit work collaborators can still edit", () 
     }).caps.edit,
     true,
   );
+});
+
+test("admin role alone can view but cannot mutate another member's work", () => {
+  const result = resolveWorkCapabilities({
+    galleryCaps: uploadCaps,
+    work,
+    user: admin,
+    collaborator: null,
+  });
+
+  assert.equal(result.caps.view, true);
+  assert.equal(result.caps.edit, false);
+  assert.equal(result.caps.manage_collaborators, false);
+  assert.equal(result.version, false);
+  assert.equal(result.crosspost, false);
 });
 
 test("explicit version collaborators can version without metadata edit rights", () => {
@@ -131,6 +164,47 @@ test("any explicit work collaborator can crosspost without edit rights", () => {
   assert.equal(result.caps.edit, false);
   assert.equal(result.version, false);
   assert.equal(result.crosspost, true);
+});
+
+test("crosspost targets allow Everyone and owned galleries", () => {
+  assert.equal(canCrosspostToGallery({ caps: uploadCaps, gallery: everyoneGallery, user: galleryEditor }), true);
+  assert.equal(canCrosspostToGallery({ caps: uploadCaps, gallery: ownIndividualGallery, user: galleryEditor }), true);
+  assert.equal(canCrosspostToGallery({ caps: uploadCaps, gallery: ownCollaborativeGallery, user: galleryEditor }), true);
+});
+
+test("crosspost targets block non-owned Individual and Collaborative galleries", () => {
+  assert.equal(canCrosspostToGallery({ caps: uploadCaps, gallery: individualGallery, user: galleryEditor }), false);
+  assert.equal(canCrosspostToGallery({ caps: uploadCaps, gallery: collaborativeGallery, user: galleryEditor }), false);
+  assert.equal(canCrosspostToGallery({ caps: uploadCaps, gallery: individualGallery, user: admin }), false);
+  assert.equal(canCrosspostToGallery({ caps: { ...uploadCaps, upload_work: false }, gallery: collaborativeGallery, user: galleryEditor }), false);
+});
+
+test("Individual gallery members cannot gain upload, edit, or manage capabilities", () => {
+  const result = resolveGalleryCapabilities({
+    baseCaps: publicViewCaps,
+    gallery: individualGallery,
+    member: delegatedMember,
+  });
+
+  assert.equal(result.view, true);
+  assert.equal(result.comment, true);
+  assert.equal(result.upload_work, false);
+  assert.equal(result.edit, false);
+  assert.equal(result.manage_collaborators, false);
+});
+
+test("Collaborative gallery members can still use delegated capabilities", () => {
+  const result = resolveGalleryCapabilities({
+    baseCaps: publicViewCaps,
+    gallery: collaborativeGallery,
+    member: delegatedMember,
+  });
+
+  assert.equal(result.view, true);
+  assert.equal(result.comment, true);
+  assert.equal(result.upload_work, true);
+  assert.equal(result.edit, true);
+  assert.equal(result.manage_collaborators, true);
 });
 
 let passed = 0;

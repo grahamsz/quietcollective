@@ -611,7 +611,7 @@ paths:
   /api/galleries/{galleryId}/works:
     post:
       summary: Upload an image work
-      description: Multipart upload. Originals remain private; preview and thumbnail variants are served through signed Worker URLs.
+      description: Multipart upload. The caller must be allowed to upload to the target gallery; Individual galleries only allow their owner or an admin to add works. Originals remain private; preview and thumbnail variants are served through signed Worker URLs.
       parameters:
         - name: galleryId
           in: path
@@ -649,7 +649,7 @@ paths:
   /api/galleries/{id}/crosspost-candidates:
     get:
       summary: List works the current user can crosspost to a gallery
-      description: Returns works owned by the current user or works where they are credited as a collaborator. Candidates already in the target gallery are excluded.
+      description: Returns works owned by the current user or works where they are credited as a collaborator. The target gallery must allow uploads and must be an Everyone gallery or a gallery owned by the caller. Candidates already in the target gallery are excluded.
       parameters:
         - name: id
           in: path
@@ -710,7 +710,7 @@ paths:
   /api/works/{id}/galleries:
     post:
       summary: Crosspost a work to another gallery
-      description: The caller must be the work owner, an admin, or an explicit collaborator on the work, and must be allowed to upload to the target gallery.
+      description: The caller must be the work owner, an admin, or an explicit collaborator on the work. The target gallery must allow uploads and must be an Everyone gallery or a gallery owned by the caller; admin status does not by itself satisfy target-gallery ownership.
       parameters:
         - name: id
           in: path
@@ -811,6 +811,73 @@ paths:
           description: Notifications with hydrated activity summary fields.
         "304":
           $ref: "#/components/responses/NotModified"
+
+  /api/notifications/poll:
+    get:
+      summary: Poll unread browser notifications
+      description: Returns unread notification counts and a small unread notification batch for browser notification delivery.
+      parameters:
+        - name: since
+          in: query
+          required: false
+          schema:
+            type: string
+            format: date-time
+      responses:
+        "200":
+          description: Current unread notification state.
+        "304":
+          $ref: "#/components/responses/NotModified"
+
+  /api/notifications/push-public-key:
+    get:
+      summary: Browser push VAPID public key
+      responses:
+        "200":
+          description: Web Push availability and application server key.
+
+  /api/notifications/push-subscriptions:
+    post:
+      summary: Register browser push subscription
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [endpoint, keys]
+              properties:
+                endpoint:
+                  type: string
+                  format: uri
+                expirationTime:
+                  type: [integer, "null"]
+                keys:
+                  type: object
+                  required: [p256dh, auth]
+                  properties:
+                    p256dh:
+                      type: string
+                    auth:
+                      type: string
+      responses:
+        "200":
+          description: Subscription saved.
+    delete:
+      summary: Disable browser push subscription
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                endpoint:
+                  type: string
+                  format: uri
+      responses:
+        "200":
+          description: Subscription disabled.
 
   /api/notifications/{id}/read:
     post:

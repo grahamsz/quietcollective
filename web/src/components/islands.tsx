@@ -15,10 +15,10 @@ import {
 } from "../views/galleries";
 import { ExportsView, ProfileView } from "../views/account";
 import { AdminInvitesView, AdminView } from "../views/admin";
-import { InviteView, LoginView, SetupDisabledView, SetupFormView } from "../views/auth";
+import { ForcePasswordChangeView, ForgotPasswordView, InviteView, LoginView, ResetPasswordView, RulesAcceptView, SetupDisabledView, SetupFormView } from "../views/auth";
 import { GalleriesIndexView, HomeView, MemberProfileView, MembersIndexView, TagPageView } from "../views/home";
 import { NotFoundView } from "../views/not-found";
-import { WorkDetailView, WorkEditView, WorkVersionsView } from "../views/works";
+import { WorkCrosspostGalleryModalView, WorkDetailView, WorkEditView, WorkVersionsView } from "../views/works";
 
 type Island = { component: string; props: Record<string, unknown> };
 
@@ -79,12 +79,17 @@ function islandNode(island: Island): ComponentChildren {
   if (island.component === "setup-form-view") return <SetupFormView {...props} />;
   if (island.component === "login-view") return <LoginView {...props} />;
   if (island.component === "invite-view") return <InviteView {...props} />;
+  if (island.component === "forgot-password-view") return <ForgotPasswordView {...props} />;
+  if (island.component === "reset-password-view") return <ResetPasswordView {...props} />;
+  if (island.component === "force-password-change-view") return <ForcePasswordChangeView {...props} />;
+  if (island.component === "rules-accept-view") return <RulesAcceptView {...props} />;
   if (island.component === "profile-view") return <ProfileView {...props} />;
   if (island.component === "exports-view") return <ExportsView {...props} />;
   if (island.component === "admin-view") return <AdminView {...props} />;
   if (island.component === "admin-invites-view") return <AdminInvitesView {...props} />;
   if (island.component === "not-found-view") return <NotFoundView {...props} />;
   if (island.component === "work-detail-view") return <WorkDetailView {...props} />;
+  if (island.component === "work-crosspost-gallery-modal-view") return <WorkCrosspostGalleryModalView {...props} />;
   if (island.component === "work-edit-view") return <WorkEditView {...props} />;
   if (island.component === "work-versions-view") return <WorkVersionsView {...props} />;
   return null;

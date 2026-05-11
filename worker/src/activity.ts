@@ -59,7 +59,9 @@ export type NotificationActivityJoinedRow = ActivityJoinedRow & {
   notification_id: string;
   notification_event_id: string;
   notification_type: string;
+  notification_title?: string | null;
   notification_body: string;
+  notification_action_url?: string | null;
   notification_read_at: string | null;
   notification_created_at: string;
 };
@@ -242,6 +244,7 @@ function targetVisible(row: ActivityJoinedRow, visibleGalleries: Set<string>, vi
 }
 
 export function joinedEventVisible(user: AppUser, row: ActivityJoinedRow, visibleGalleries: Set<string>, visibleWorks: Set<string>) {
+  if (row.type === "rules.published" || row.type === "rules.accepted") return true;
   if (row.subject_type === "user" || row.subject_type === "profile") return true;
   if (row.subject_type === "gallery") return visibleGalleries.has(row.subject_id);
   if (row.subject_type === "work") return !!row.subject_work_id && visibleWorks.has(row.subject_work_id);
@@ -295,7 +298,7 @@ export async function activityEntryFromJoinedRow(
     }
     if (row.type === "gallery.visibility_changed") summary = `${actorLabel} changed visibility on "${galleryTitle}"`;
     thumbnail_url = await activityThumbnailUrl(env, thumbnailCache, row.subject_gallery_thumb_key, row.subject_gallery_thumb_type, row.subject_gallery_thumb_work_id, row.subject_gallery_thumb_version_id);
-  } else if (row.type === "work.created" || row.type === "work.updated" || row.type === "work.crossposted" || row.type === "work.version_created" || row.type === "work.feedback_requested") {
+  } else if (row.type === "work.created" || row.type === "work.updated" || row.type === "work.crossposted" || row.type === "work.version_created" || row.type === "work.feedback_requested" || row.type === "work.collaborator_added" || row.type === "work.collaborator_updated") {
     const workTitle = row.subject_work_title || "work";
     href = row.subject_work_id ? `/works/${row.subject_work_id}` : null;
     if (row.target_version_id) {
@@ -311,6 +314,8 @@ export async function activityEntryFromJoinedRow(
     }
     if (row.type === "work.version_created") summary = `${actorLabel} updated work "${workTitle}"`;
     if (row.type === "work.feedback_requested") summary = `${actorLabel} requested feedback on "${workTitle}"`;
+    if (row.type === "work.collaborator_added") summary = `${actorLabel} added you as a contributor on "${workTitle}"`;
+    if (row.type === "work.collaborator_updated") summary = `${actorLabel} updated your contributor credit on "${workTitle}"`;
   } else if (row.type === "comment.created" || row.type === "comment.replied") {
     const body = typeof payload.body === "string" ? payload.body : "";
     comment_preview = stripMarkdownImages(body).slice(0, 360);
@@ -355,6 +360,10 @@ export async function activityEntryFromJoinedRow(
     href = row.actor_handle ? `/members/${row.actor_handle}` : null;
   } else if (row.type === "invite.accepted") {
     summary = `${actorLabel} accepted an invite`;
+  } else if (row.type === "rules.published") {
+    summary = `${actorLabel} published a new server rules version`;
+  } else if (row.type === "rules.accepted") {
+    summary = `${actorLabel} accepted the server rules`;
   } else if (row.type === "user.joined") {
     summary = `${actorLabel} joined`;
     href = row.actor_handle ? `/members/${row.actor_handle}` : null;

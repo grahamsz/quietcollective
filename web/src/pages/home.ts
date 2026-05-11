@@ -1,5 +1,5 @@
 // @ts-nocheck
-import { api, encodePath, ensureAuthed, loadGalleries, loadMembers, newestFirst, pageShell, setApp, state } from "../app/core";
+import { api, encodePath, ensureAuthed, loadGalleries, loadMembers, newestFirst, pageShell, setApp, state, updateNotificationBell } from "../app/core";
 import { bindCommentForm } from "../app/comments";
 import { galleriesIndexView, homeView, memberProfileView, membersIndexView, tagPageView } from "../views/islands";
 
@@ -20,11 +20,13 @@ async function renderHome() {
   state.notificationStatusLoaded = true;
   setApp(pageShell(homeView({
     instanceName: state.instance.name,
+    subtitle: state.instance.homepage_subtitle || "",
     galleries: state.galleries,
     works,
     activityEvents: activity.events || [],
     members: state.members,
   })));
+  updateNotificationBell();
 }
 
 async function renderGalleries() {

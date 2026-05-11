@@ -45,6 +45,23 @@ function clearApiJsonCache() {
   }
 }
 
+function requiredGatePath(user) {
+  if (user?.password_change_required) return "/force-password-change";
+  if (user?.rules_required) return "/rules/accept";
+  return "";
+}
+
+function publicAuthPath(path = location.pathname) {
+  return path === "/login" || path === "/setup" || path === "/forgot-password" || path.startsWith("/invite/") || path.startsWith("/reset-password/");
+}
+
+function redirectToRequiredGate(user) {
+  const gate = requiredGatePath(user);
+  if (!gate || location.pathname === gate || publicAuthPath()) return false;
+  navigate(gate);
+  return true;
+}
+
 async function api(path, options = {}) {
   const method = (options.method || "GET").toUpperCase();
   const apiPath = normalizedApiPath(path);
@@ -69,6 +86,12 @@ async function api(path, options = {}) {
   if (!response.ok) {
     const error = new Error(typeof data === "object" ? data.error || "Request failed" : data || "Request failed");
     error.status = response.status;
+    if (typeof data === "object") {
+      error.password_change_required = !!data.password_change_required;
+      error.rules_required = !!data.rules_required;
+    }
+    if (error.password_change_required && location.pathname !== "/force-password-change") navigate("/force-password-change");
+    if (error.rules_required && location.pathname !== "/rules/accept") navigate("/rules/accept");
     throw error;
   }
   if (method !== "GET") clearApiJsonCache();
@@ -81,6 +104,7 @@ async function refreshMe() {
   const data = await api("/api/auth/me");
   state.me = data.user;
   state.instance = data.instance || state.instance;
+  state.requirementsCheckedAt = Date.now();
   return state.me;
 }
 
@@ -91,6 +115,7 @@ async function loadMembers() {
   } catch {
     state.members = [];
   }
+  state.membersLoaded = true;
   return state.members;
 }
 
@@ -139,6 +164,10 @@ async function loadRoleSuggestions() {
 
 async function ensureAuthed() {
   if (state.me) {
+    if (Date.now() - Number(state.requirementsCheckedAt || 0) > 60 * 1000) {
+      await refreshMe().catch(() => undefined);
+    }
+    if (redirectToRequiredGate(state.me)) return false;
     const loads = [];
     if (!state.galleries.length) loads.push(loadGalleries());
     if (!state.popularTagsLoaded) loads.push(loadPopularTags());
@@ -148,6 +177,7 @@ async function ensureAuthed() {
   }
   try {
     await refreshMe();
+    if (redirectToRequiredGate(state.me)) return false;
     await Promise.all([loadGalleries(), loadPopularTags(), loadNotificationStatus()]);
     syncBrowserNotifications().catch(() => undefined);
     return true;

@@ -30,14 +30,14 @@ function Avatar({ user, className = "avatar" }) {
 }
 
 /** Renders the signed-in dashboard used by the `/` route. */
-export function HomeView({ instanceName, galleries, works, activityEvents, members }) {
+export function HomeView({ instanceName, subtitle, galleries, works, activityEvents, members }) {
   return (
     <section class="view home-view">
       <div class="view-header">
         <div>
           <p class="eyebrow">Recently Updated</p>
           <h1>{instanceName || "QuietCollective"}</h1>
-          <p class="lede">Private image galleries, critique, collaborator credits, and member profiles for logged-in members.</p>
+          <p class="lede">{subtitle || "Private image galleries, critique, collaborator credits, and member profiles for logged-in members."}</p>
         </div>
         <div class="toolbar">
           <a href="/galleries/new" class="button primary square-button" data-link aria-label="New gallery" title="New gallery"><Icon name="plus" /><span class="sr-only">New gallery</span></a>

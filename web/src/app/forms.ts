@@ -1,5 +1,7 @@
 // @ts-nocheck
+import { imageUploadVariants } from "../lib/utils";
 import { api } from "./api";
+import { bindMarkdownMentionAutocomplete } from "./mentions";
 import { toast } from "./toast";
 
 function field(form, name) {
@@ -57,8 +59,11 @@ function enhanceMarkdownEditors(scope = document) {
       imageMaxSize: 1024 * 1024 * 10,
       imageUploadFunction: async (file, onSuccess, onError) => {
         try {
+          const { preview, thumbnail } = await imageUploadVariants(file);
           const body = new FormData();
           body.set("file", file);
+          body.set("preview", preview);
+          body.set("thumbnail", thumbnail);
           body.set("target_type", targetType);
           if (targetId) body.set("target_id", targetId);
           const data = await api("/api/markdown-assets", { method: "POST", body });
@@ -70,8 +75,6 @@ function enhanceMarkdownEditors(scope = document) {
       toolbar: [
         { name: "bold", action: EasyMDE.toggleBold, text: "B", title: "Bold" },
         { name: "italic", action: EasyMDE.toggleItalic, text: "I", title: "Italic" },
-        { name: "heading", action: EasyMDE.toggleHeadingSmaller, text: "H", title: "Heading" },
-        "|",
         { name: "quote", action: EasyMDE.toggleBlockquote, text: "Quote", title: "Quote" },
         { name: "unordered-list", action: EasyMDE.toggleUnorderedList, text: "List", title: "Bulleted list" },
         { name: "ordered-list", action: EasyMDE.toggleOrderedList, text: "1.", title: "Numbered list" },
@@ -83,6 +86,7 @@ function enhanceMarkdownEditors(scope = document) {
       ],
     });
     textarea._easyMDE = editor;
+    bindMarkdownMentionAutocomplete(editor.codemirror);
     editor.codemirror.on("change", () => {
       textarea.value = editor.value();
     });

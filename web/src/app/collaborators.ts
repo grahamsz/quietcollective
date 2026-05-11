@@ -1,5 +1,6 @@
 // @ts-nocheck
 import { api, buttonIcon, DEFAULT_WORK_ROLES, encodePath, escapeHtml, state } from "./core";
+import { bindMentionAutocomplete } from "./mentions";
 
 function workRoleLabels() {
   return [...new Set([...(state.roleSuggestions || []).map((role) => role.label), ...DEFAULT_WORK_ROLES].filter(Boolean))].sort((a, b) => a.localeCompare(b));
@@ -20,7 +21,8 @@ function collaboratorLabel(collab) {
 function collaboratorCreditRows(options = {}) {
   const listId = options.listId || "work-role-options";
   const rows = options.rows || 1;
-  return `<div class="collaborator-credit-grid" data-collaborator-grid><div class="collaborator-credit-head">User</div><div class="collaborator-credit-head">Role</div>${Array.from({ length: rows }).map(() => `<input name="collaborator_user" placeholder="@handle or credited name" autocomplete="off"><input name="role_label" list="${escapeHtml(listId)}" placeholder="photographer">`).join("")}</div><div class="toolbar">${buttonIcon("plus", "collaborator", "button ghost", "type=button data-add-collaborator-row")}</div>${roleDatalist(listId)}`;
+  const addLabel = options.addLabel || "collaborator";
+  return `<div class="collaborator-credit-grid" data-collaborator-grid><div class="collaborator-credit-head">User</div><div class="collaborator-credit-head">Role</div>${Array.from({ length: rows }).map(() => `<input name="collaborator_user" placeholder="@handle or credited name" autocomplete="off"><input name="role_label" list="${escapeHtml(listId)}" placeholder="photographer">`).join("")}</div><div class="toolbar">${buttonIcon("plus", addLabel, "button ghost", "type=button data-add-collaborator-row")}</div>${roleDatalist(listId)}`;
 }
 
 function collaboratorPayloads(scope) {
@@ -38,6 +40,7 @@ async function addCollaborators(workId, collaborators) {
 }
 
 function bindCollaboratorRows(scope = document) {
+  bindMentionAutocomplete(scope);
   scope.querySelectorAll("[data-add-collaborator-row]").forEach((control) => {
     control.addEventListener("click", () => {
       const form = control.closest("form");
@@ -52,6 +55,7 @@ function bindCollaboratorRows(scope = document) {
       role.placeholder = "photographer";
       role.setAttribute("list", grid.querySelector("[name=role_label]")?.getAttribute("list") || "work-role-options");
       grid.append(user, role);
+      bindMentionAutocomplete(grid);
       user.focus();
     });
   });

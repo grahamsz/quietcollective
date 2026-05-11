@@ -6,17 +6,18 @@ import { avatar, button, iconButton, link } from "../components/ui";
 import { encodePath, escapeHtml, newestFirst } from "../lib/utils";
 import { api } from "./api";
 import { enhanceMarkdownEditors } from "./forms";
-import { bindNotificationActions, bindReactionButtons, bindReplyButtons } from "./interactions";
-import { disableBrowserNotifications, notificationBell, touchBrowserNotificationWindow } from "./notifications";
+import { bindInstallActions, installButton } from "./install";
+import { bindMarkdownImageLinks, bindNotificationActions, bindReactionButtons, bindReplyButtons } from "./interactions";
+import { disableBrowserNotifications, notificationBell, touchBrowserNotificationWindow, updateNotificationBell } from "./notifications";
 import { navigate } from "./routing";
 import { state, UPSTREAM_SOURCE_URL } from "./state";
 
 const appRoot = document.querySelector("#app");
 
 function ownershipHelp(value) {
-  if (value === "whole_server") return "Everyone ownership lets any logged-in member add images. Only the owner, gallery admins, and instance admins can edit gallery settings.";
+  if (value === "whole_server") return "Everyone ownership lets any logged-in member add images. Gallery settings are limited to the gallery owner and managers.";
   if (value === "collaborative") return "Collaborative galleries are meant for invited collaborators. Add members who can upload, edit, or manage collaborators.";
-  return "Self-owned galleries are controlled by you. You can still invite people to view or comment.";
+  return "Individual galleries are controlled by you. You can still invite people to view or comment.";
 }
 
 function visibilityHelp(value) {
@@ -55,7 +56,7 @@ function pageShell(content, options = {}) {
         ${popularTags.length ? `<section class="sidebar-section sidebar-tags"><h2>Popular Tags</h2><div class="sidebar-tag-list">${popularTags.map((tag) => `<a href="/tags/${encodePath(tag.tag)}" data-link><span>#${escapeHtml(tag.tag)}</span><small>${escapeHtml(String(tag.count || 0))}</small></a>`).join("")}</div></section>` : ""}
         <div class="sidebar-foot">
           ${state.me?.role === "admin" ? `<nav class="admin-nav" aria-label="Admin"><a href="/admin" ${location.pathname === "/admin" ? 'aria-current="page"' : ""} data-link>Admin</a><a href="/admin/invites" ${location.pathname === "/admin/invites" ? 'aria-current="page"' : ""} data-link>Invites</a></nav>` : ""}
-          <p class="rights-note">Uploaded user content remains owned by the uploader or rights holder. Powered by the open source <a href="${UPSTREAM_SOURCE_URL}" rel="noreferrer">QuietCollective project</a>.</p>
+          <p class="rights-note">${escapeHtml(state.instance.content_notice || "Uploaded user content remains owned by the uploader or rights holder.")} Powered by the open source <a href="${UPSTREAM_SOURCE_URL}" rel="noreferrer">QuietCollective project</a>.</p>
           ${source}
         </div>
       </aside>
@@ -63,7 +64,7 @@ function pageShell(content, options = {}) {
         <header class="topbar">
           ${iconButton("menu", "Menu", "icon-button mobile-menu", "data-menu type=button")}
           <div><strong>${escapeHtml(options.kicker || state.instance.name || "QuietCollective")}</strong></div>
-          <div class="topbar-actions">${state.me ? `${notificationBell()}<a href="/me/profile" class="user-chip" data-link>${avatar(state.me)}<span>${escapeHtml(state.me.handle)}</span></a>${button("Log out", "button ghost", "data-logout")}` : link("/login", "Log in", "button")}</div>
+          <div class="topbar-actions">${state.me ? `${installButton()}${notificationBell()}<a href="/me/profile" class="user-chip" data-link>${avatar(state.me)}<span>${escapeHtml(state.me.handle)}</span></a>${button("Log out", "button ghost", "data-logout")}` : link("/login", "Log in", "button")}</div>
         </header>
         <div class="content">${content}</div>
       </main>
@@ -73,7 +74,7 @@ function pageShell(content, options = {}) {
 
 /** Wraps setup, login, and invite views in the unauthenticated boot screen. */
 function authPage(content) {
-  return `<main class="boot-screen">${brandMark()}<section class="panel" style="width:min(520px,calc(100vw - 32px));text-align:left"><div class="panel-body">${content}<p class="rights-note" style="margin-top:18px">Uploaded user content remains owned by the uploader or rights holder. Powered by the open source <a href="${UPSTREAM_SOURCE_URL}" rel="noreferrer">QuietCollective project</a>.</p></div></section></main>`;
+  return `<main class="boot-screen">${brandMark()}<section class="panel" style="width:min(520px,calc(100vw - 32px));text-align:left"><div class="panel-body">${content}<p class="rights-note" style="margin-top:18px">${escapeHtml(state.instance.content_notice || "Uploaded user content remains owned by the uploader or rights holder.")} Powered by the open source <a href="${UPSTREAM_SOURCE_URL}" rel="noreferrer">QuietCollective project</a>.</p></div></section></main>`;
 }
 
 function setApp(html) {
@@ -101,13 +102,17 @@ function bindCommonActions() {
     state.popularTagsLoaded = false;
     state.unreadNotifications = 0;
     state.notificationStatusLoaded = false;
+    state.requirementsCheckedAt = 0;
+    updateNotificationBell();
     await disableBrowserNotifications({ silent: true });
     localStorage.removeItem("qc_token");
     navigate("/login");
   });
   bindReactionButtons();
+  bindInstallActions();
   bindNotificationActions();
   bindReplyButtons();
+  bindMarkdownImageLinks();
   bindProtectedMedia();
   touchBrowserNotificationWindow();
 }

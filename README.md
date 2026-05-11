@@ -53,12 +53,20 @@ These instructions use the production resource names already referenced by `wran
    wrangler secret put JWT_SECRET
    wrangler secret put ADMIN_SETUP_TOKEN
    ```
-5. Apply D1 migrations locally when developing and remotely before production deploys:
+5. Configure browser push notification keys before deploying Web Push support:
+   ```bash
+   npm run vapid:generate
+   wrangler secret put VAPID_PUBLIC_KEY
+   wrangler secret put VAPID_PRIVATE_KEY
+   wrangler secret put VAPID_SUBJECT
+   ```
+   Use the generated public key for `VAPID_PUBLIC_KEY`, the generated private key for `VAPID_PRIVATE_KEY`, and a contact URI such as `mailto:notifications@example.com` for `VAPID_SUBJECT`.
+6. Apply D1 migrations locally when developing and remotely before production deploys:
    ```bash
    npm run d1:migrations:apply
    npm run d1:migrations:apply:remote
    ```
-6. Build and deploy:
+7. Build and deploy:
    ```bash
    npm run deploy
    ```
@@ -93,6 +101,7 @@ npm run web:build
 npm run worker:typecheck
 npm run test:security
 npm run verify
+npm run vapid:generate
 npm run media:backfill:webp -- --dry-run
 npm run d1:migrations:apply
 npm run d1:migrations:apply:remote

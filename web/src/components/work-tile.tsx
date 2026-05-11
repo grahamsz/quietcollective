@@ -21,7 +21,7 @@ function tileRevealStyle(index: number) {
 
 /** Displays the feedback-requested flag used on work tiles in grids and feeds. */
 function FeedbackRequestedIndicator({ work }: { work: Work }) {
-  if (!work.feedback_requested) return null;
+  if (!work.feedback_requested || work.feedback_dismissed) return null;
   const prompt = String(work.feedback_prompt || "").trim().replace(/\s+/g, " ");
   const title = prompt ? `Feedback requested: ${prompt}` : "Feedback requested: this work is asking for critique.";
   return (

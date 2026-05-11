@@ -1,6 +1,6 @@
 // @ts-nocheck
 import { commentsPanel, commentArticle, workCommentsPanel } from "../app/comments";
-import { collaboratorCreditRows } from "../app/collaborators";
+import { collaboratorCreditRows, roleDatalist } from "../app/collaborators";
 import { reactionButton } from "../app/interactions";
 import { browserNotificationsPanel } from "../app/notifications";
 import { islandPlaceholder } from "../components/islands";
@@ -23,8 +23,8 @@ export function galleryDetailView({ id, gallery, works, comments, members }) {
 }
 
 /** Mounts the TSX add-to-gallery modal opened from a gallery detail page. */
-export function addToGalleryModalView(gallery) {
-  return islandPlaceholder("add-to-gallery-modal-view", { gallery });
+export function addToGalleryModalView(gallery, canCrosspost = false) {
+  return islandPlaceholder("add-to-gallery-modal-view", { gallery, canCrosspost });
 }
 
 /** Mounts the TSX crosspost modal shell while candidate works are loading. */
@@ -35,6 +35,11 @@ export function crosspostModalShellView(gallery) {
 /** Mounts the TSX candidate picker inside the crosspost modal. */
 export function crosspostPickerView(works, galleryId) {
   return islandPlaceholder("crosspost-picker-view", { works, galleryId });
+}
+
+/** Mounts the TSX target-gallery picker for crossposting a work. */
+export function workCrosspostGalleryModalView(work, galleries) {
+  return islandPlaceholder("work-crosspost-gallery-modal-view", { work, galleries });
 }
 
 /** Mounts the TSX image upload modal after a file is selected. */
@@ -96,13 +101,33 @@ export function setupFormView() {
 }
 
 /** Mounts the login auth view. */
-export function loginView(instanceName) {
-  return islandPlaceholder("login-view", { instanceName });
+export function loginView(instanceName, subtitle = "") {
+  return islandPlaceholder("login-view", { instanceName, subtitle });
 }
 
 /** Mounts the invite acceptance auth view. */
-export function inviteView({ instanceName, roleOnJoin }) {
-  return islandPlaceholder("invite-view", { instanceName, roleOnJoin });
+export function inviteView({ instanceName, roleOnJoin, subtitle }) {
+  return islandPlaceholder("invite-view", { instanceName, roleOnJoin, subtitle });
+}
+
+/** Mounts the password reset request auth view. */
+export function forgotPasswordView(instanceName) {
+  return islandPlaceholder("forgot-password-view", { instanceName });
+}
+
+/** Mounts the password reset completion auth view. */
+export function resetPasswordView() {
+  return islandPlaceholder("reset-password-view", {});
+}
+
+/** Mounts the forced password change gate view. */
+export function forcePasswordChangeView() {
+  return islandPlaceholder("force-password-change-view", {});
+}
+
+/** Mounts the server rules acceptance gate view. */
+export function rulesAcceptView(rules) {
+  return islandPlaceholder("rules-accept-view", { rules });
 }
 
 /** Mounts the profile settings route at `/me/profile`. */
@@ -133,7 +158,7 @@ export function notFoundView() {
 export { currentWorkGallery };
 
 /** Mounts the TSX work detail route at `/works/:id`. */
-export function workDetailView({ id, work, gallery, comments, versions, collaborators }) {
+export function workDetailView({ id, work, gallery, comments, versions, collaborators, crosspostOptions }) {
   return islandPlaceholder("work-detail-view", {
     id,
     work,
@@ -141,6 +166,8 @@ export function workDetailView({ id, work, gallery, comments, versions, collabor
     commentsHtml: workCommentsPanel(id, versions || [], comments, work.current_version?.id || ""),
     reactionButtonHtml: reactionButton("work", id, work.reactions),
     collaborators,
+    crosspostOptions,
+    collaboratorRowsHtml: roleDatalist("detail-work-role-options"),
   });
 }
 

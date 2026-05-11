@@ -1,17 +1,44 @@
 {
+  "id": "/",
   "name": "QuietCollective",
-  "short_name": "QuietCollective",
+  "short_name": "QC",
   "description": "Private gallery, critique, and collaboration space for small artist communities.",
   "start_url": "/",
   "scope": "/",
   "display": "standalone",
-  "background_color": "#fbfcfa",
-  "theme_color": "#24302b",
+  "display_override": ["standalone", "minimal-ui"],
+  "background_color": "#050505",
+  "theme_color": "#050505",
+  "categories": ["photo", "social", "productivity"],
   "icons": [
     {
       "src": "/icon.svg",
       "sizes": "any",
       "type": "image/svg+xml"
+    },
+    {
+      "src": "/icon-192.png",
+      "sizes": "192x192",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "/icon-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "/icon-maskable-192.png",
+      "sizes": "192x192",
+      "type": "image/png",
+      "purpose": "maskable"
+    },
+    {
+      "src": "/icon-maskable-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "maskable"
     }
   ]
 }

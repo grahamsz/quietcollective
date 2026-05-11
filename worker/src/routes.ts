@@ -21,11 +21,23 @@ import {
   visibleWorkIds,
 } from "./activity";
 import { apiNotModified, bumpApiCacheToken, cacheableJson, etagMatches, mutatingApiRequest, sanitizeEtagPart } from "./api-cache";
-import { base64Url, sha256 } from "./crypto";
+import { base64Url, decryptString, encryptString, getSecret, sha256 } from "./crypto";
+import { sendEmail, smtpConfigured, type SmtpConfig } from "./email";
 import { readSignedMediaPayload, signedMediaUrl } from "./media";
 import { createSession, expiredSessionCookie, sessionCookie } from "./sessions";
+import { webPushConfigured } from "./web-push";
 import type { AppContext, Ctx } from "./app-context";
-import { BROWSER_NOTIFICATION_ACTIVE_POLL_INTERVAL_MS, BROWSER_NOTIFICATION_IDLE_POLL_INTERVAL_MS, BROWSER_NOTIFICATION_ACTIVE_WINDOW_MS, POPULAR_TAG_WINDOW_DAYS, ROLE_SUGGESTIONS } from "./constants";
+import {
+  BROWSER_NOTIFICATION_ACTIVE_POLL_INTERVAL_MS,
+  BROWSER_NOTIFICATION_ACTIVE_WINDOW_MS,
+  BROWSER_NOTIFICATION_FOLLOWUP_POLL_INTERVAL_MS,
+  BROWSER_NOTIFICATION_FOLLOWUP_WINDOW_MS,
+  BROWSER_NOTIFICATION_IDLE_POLL_INTERVAL_MS,
+  BROWSER_NOTIFICATION_RECENT_POLL_INTERVAL_MS,
+  BROWSER_NOTIFICATION_RECENT_WINDOW_MS,
+  POPULAR_TAG_WINDOW_DAYS,
+  ROLE_SUGGESTIONS,
+} from "./constants";
 import type { AppUser, Env, GalleryRow, WorkRow, WorkVersionRow } from "./types";
 import { cacheControl, fileField, jsonText, normalizeClientUploadKey, normalizeGalleryOwnership, normalizeHandle, normalizeRoleLabel, normalizeTag, now, numberField, parseJson, recordTagUse, recordTextTags, stringField, truthy } from "./utils";
 import type { RouteApp, RouteDeps } from "./routes/types";
@@ -71,7 +83,196 @@ let feedbackCleanupCheckedAt = 0;
 const FEEDBACK_CLEANUP_INTERVAL_MS = 5 * 60 * 1000;
 
 export function registerRoutes(app: RouteApp, deps: RouteDeps) {
-  const { prepareApiCache, readBody, getUserById, getUserByHandle, requireUser, currentUser, publicUser, getTags, getSetting, setSetting, instanceInfo, adminCount, isAdmin, galleryCapabilities, getWork, workGalleryLinks, workCapabilities, galleryVisibilityRank, workVisibilityRank, assertGalleryCapability, assertWorkCapability, assertWorkCrosspostCapability, canViewTarget, canCommentTarget, insertEvent, processEvent, serializeGallery, reactionSummary, serializeWork, serializeVersion, serializeGalleryWorkListItem, putR2File, ensureWorkRoleSuggestion } = deps;
+  const { prepareApiCache, readBody, getUserById, getUserByHandle, requireUser, currentUser, publicUser, getTags, getSetting, setSetting, instanceInfo, adminCount, isAdmin, galleryCapabilities, getWork, workGalleryLinks, workCapabilities, galleryVisibilityRank, workVisibilityRank, assertGalleryCapability, assertGalleryCrosspostTarget, assertWorkCapability, assertWorkCrosspostCapability, canViewTarget, canCommentTarget, insertEvent, processEvent, serializeGallery, reactionSummary, serializeWork, serializeVersion, serializeGalleryWorkListItem, putR2File, ensureWorkRoleSuggestion } = deps;
+
+type RuleVersionRow = {
+  id: string;
+  body_markdown: string;
+  body_html: string;
+  created_by: string;
+  created_at: string;
+  published_at: string;
+  superseded_at: string | null;
+  created_by_handle?: string | null;
+  accepted_count?: number;
+};
+
+const WELCOME_SUBJECT = "Welcome to {{instance_name}}";
+const WELCOME_BODY = "Hi {{handle}},\n\nWelcome to {{instance_name}}. You can sign in at {{site_url}}.";
+const RESET_SUBJECT = "Reset your {{instance_name}} password";
+const RESET_BODY = "Hi {{handle}},\n\nUse this link to reset your password:\n\n{{reset_url}}\n\nThis link expires in one hour.";
+const INVITE_TEXT = "Welcome to my {{instance_name}} community. Use this invite link: {{invite_url}}";
+
+function escapeHtml(value: string) {
+  return value.replace(/[&<>"']/g, (char) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[char] || char);
+}
+
+function simpleMarkdownToHtml(value: string) {
+  const lines = value.replace(/\r\n/g, "\n").split("\n");
+  const blocks: string[] = [];
+  let list: string[] = [];
+  const flushList = () => {
+    if (!list.length) return;
+    blocks.push(`<ul>${list.map((item) => `<li>${escapeHtml(item)}</li>`).join("")}</ul>`);
+    list = [];
+  };
+  for (const line of lines) {
+    const trimmed = line.trim();
+    if (!trimmed) {
+      flushList();
+      continue;
+    }
+    const heading = trimmed.match(/^(#{1,3})\s+(.+)$/);
+    if (heading) {
+      flushList();
+      blocks.push(`<h${heading[1].length}>${escapeHtml(heading[2])}</h${heading[1].length}>`);
+      continue;
+    }
+    const bullet = trimmed.match(/^[-*]\s+(.+)$/);
+    if (bullet) {
+      list.push(bullet[1]);
+      continue;
+    }
+    flushList();
+    blocks.push(`<p>${escapeHtml(trimmed)}</p>`);
+  }
+  flushList();
+  return blocks.join("\n");
+}
+
+function settingRowsToValues(rows: Array<{ key: string; value_json: string }>) {
+  const values: Record<string, unknown> = {};
+  for (const row of rows) values[row.key] = parseJson<{ value?: unknown }>(row.value_json, {}).value;
+  return values;
+}
+
+function absoluteUrl(c: Ctx, path: string) {
+  const url = new URL(c.req.url);
+  return `${url.origin}${path.startsWith("/") ? path : `/${path}`}`;
+}
+
+function applyTemplate(template: string, values: Record<string, string>) {
+  return template.replace(/\{\{\s*([a-zA-Z0-9_]+)\s*\}\}/g, (_, key: string) => values[key] ?? "");
+}
+
+function textToHtml(value: string) {
+  return value.split(/\n{2,}/).map((part) => `<p>${escapeHtml(part).replace(/\n/g, "<br>")}</p>`).join("\n");
+}
+
+function colorField(value: unknown, fallback: string) {
+  const color = stringField(value || fallback).trim();
+  return /^#[0-9a-f]{6}$/i.test(color) ? color : fallback;
+}
+
+function passwordChangeRequired(user: AppUser) {
+  if (!user.force_password_change_at) return false;
+  if (!user.password_changed_at) return true;
+  return Date.parse(user.password_changed_at) < Date.parse(user.force_password_change_at);
+}
+
+async function currentRuleVersion(db: D1Database) {
+  return db.prepare(
+    `SELECT rule_versions.*, users.handle AS created_by_handle
+     FROM rule_versions
+     LEFT JOIN users ON users.id = rule_versions.created_by
+     WHERE rule_versions.superseded_at IS NULL
+     ORDER BY rule_versions.published_at DESC
+     LIMIT 1`,
+  ).first<RuleVersionRow>();
+}
+
+async function ruleAcceptanceStatus(db: D1Database, user: AppUser) {
+  const current = await currentRuleVersion(db);
+  const accepted = current
+    ? await db.prepare("SELECT accepted_at FROM rule_acceptances WHERE rule_version_id = ? AND user_id = ?")
+      .bind(current.id, user.id)
+      .first<{ accepted_at: string }>()
+    : null;
+  const previous = await db.prepare(
+    `SELECT rule_versions.*, rule_acceptances.accepted_at
+     FROM rule_acceptances
+     JOIN rule_versions ON rule_versions.id = rule_acceptances.rule_version_id
+     WHERE rule_acceptances.user_id = ?
+     ORDER BY rule_acceptances.accepted_at DESC
+     LIMIT 1`,
+  ).bind(user.id).first<RuleVersionRow & { accepted_at: string }>();
+  return {
+    current,
+    accepted_at: accepted?.accepted_at || null,
+    required: !!current && !accepted,
+    previous_accepted: previous || null,
+  };
+}
+
+async function userRequirementFields(db: D1Database, user: AppUser) {
+  const rules = await ruleAcceptanceStatus(db, user);
+  return {
+    password_change_required: passwordChangeRequired(user),
+    rules_required: rules.required,
+    current_rule_version_id: rules.current?.id || null,
+    current_rule_accepted_at: rules.accepted_at,
+  };
+}
+
+async function publicUserWithRequirements(db: D1Database, user: AppUser, tags: string[] = []) {
+  return {
+    ...publicUser(user, tags),
+    ...(await userRequirementFields(db, user)),
+  };
+}
+
+function interactionGateExempt(path: string) {
+  return [
+    "/api/auth/logout",
+    "/api/auth/me",
+    "/api/auth/password",
+    "/api/rules/accept",
+  ].includes(path);
+}
+
+function mutatingMethod(method: string) {
+  return method === "POST" || method === "PUT" || method === "PATCH" || method === "DELETE";
+}
+
+function configSecret(env: Env) {
+  return env.SMTP_CONFIG_SECRET || getSecret(env);
+}
+
+async function smtpConfig(env: Env): Promise<SmtpConfig | null> {
+  const enabled = await getSetting(env.DB, "smtp_enabled", !!env.SMTP_HOST);
+  if (!enabled) return null;
+  const host = await getSetting(env.DB, "smtp_host", env.SMTP_HOST || "");
+  const port = Number(await getSetting(env.DB, "smtp_port", env.SMTP_PORT || "465"));
+  const username = await getSetting(env.DB, "smtp_username", env.SMTP_USERNAME || "");
+  const fromEmail = await getSetting(env.DB, "smtp_from_email", env.SMTP_FROM_EMAIL || "");
+  const replyTo = await getSetting(env.DB, "smtp_reply_to", env.SMTP_REPLY_TO || "");
+  const passwordCiphertext = await getSetting(env.DB, "smtp_password_ciphertext", null) as string | null;
+  let password = env.SMTP_PASSWORD || "";
+  if (passwordCiphertext) password = await decryptString(passwordCiphertext, configSecret(env));
+  const config = { host, port, username, password, fromEmail, replyTo, fromName: await getSetting(env.DB, "instance_name", env.INSTANCE_NAME || "QuietCollective") };
+  return smtpConfigured(config) ? config : null;
+}
+
+async function sendTemplatedEmail(c: Ctx, to: string, subjectTemplate: string, bodyTemplate: string, values: Record<string, string>) {
+  const config = await smtpConfig(c.env);
+  if (!config) return false;
+  const subject = applyTemplate(subjectTemplate, values);
+  const text = applyTemplate(bodyTemplate, values);
+  await sendEmail(config, { to, subject, text, html: textToHtml(text) });
+  return true;
+}
+
+async function createPasswordReset(c: Ctx, user: AppUser, createdBy: string | null = null) {
+  const token = base64Url(crypto.getRandomValues(new Uint8Array(24)));
+  const timestamp = now();
+  const expiresAt = new Date(Date.now() + 60 * 60 * 1000).toISOString();
+  await c.env.DB.prepare(
+    `INSERT INTO password_reset_tokens
+       (id, user_id, token_hash, created_by, created_at, expires_at)
+     VALUES (?, ?, ?, ?, ?, ?)`,
+  ).bind(ulid(), user.id, await sha256(token), createdBy, timestamp, expiresAt).run();
+  return { token, reset_url: absoluteUrl(c, `/reset-password/${token}`), expires_at: expiresAt };
+}
 
 async function clearExpiredFeedbackRequests(db: D1Database) {
   const timestamp = Date.now();
@@ -146,6 +347,52 @@ app.get("/api/health", (c) => c.json({ ok: true, service: "quietcollective" }));
 
 app.get("/api/openapi.yaml", async (c) => c.env.ASSETS.fetch(c.req.raw));
 
+app.get("/manifest.webmanifest", async (c) => {
+  const instance = await instanceInfo(c.env);
+  const customIcon = instance.app_icon_url
+    ? [
+        {
+          src: `${instance.app_icon_url}?v=${encodeURIComponent(String(await getSetting(c.env.DB, "app_icon_updated_at", "")))}`,
+          sizes: "512x512",
+          type: await getSetting(c.env.DB, "app_icon_content_type", "image/png"),
+          purpose: "any",
+        },
+      ]
+    : [];
+  const customMaskableIcon = instance.app_maskable_icon_url
+    ? [
+        {
+          src: `${instance.app_maskable_icon_url}?v=${encodeURIComponent(String(await getSetting(c.env.DB, "app_maskable_icon_updated_at", "")))}`,
+          sizes: "512x512",
+          type: await getSetting(c.env.DB, "app_maskable_icon_content_type", "image/png"),
+          purpose: "maskable",
+        },
+      ]
+    : [];
+  return c.json({
+    id: "/",
+    name: instance.app_name || instance.name || "QuietCollective",
+    short_name: instance.app_short_name || "QC",
+    description: instance.homepage_subtitle || "Private gallery, critique, and collaboration space for small artist communities.",
+    start_url: "/",
+    scope: "/",
+    display: "standalone",
+    display_override: ["standalone", "minimal-ui"],
+    background_color: instance.app_background_color || "#050505",
+    theme_color: instance.app_theme_color || "#050505",
+    categories: ["photo", "social", "productivity"],
+    icons: [
+      ...customIcon,
+      ...customMaskableIcon,
+      { src: "/icon.svg", sizes: "any", type: "image/svg+xml" },
+      { src: "/icon-192.png", sizes: "192x192", type: "image/png", purpose: "any" },
+      { src: "/icon-512.png", sizes: "512x512", type: "image/png", purpose: "any" },
+      { src: "/icon-maskable-192.png", sizes: "192x192", type: "image/png", purpose: "maskable" },
+      { src: "/icon-maskable-512.png", sizes: "512x512", type: "image/png", purpose: "maskable" },
+    ],
+  }, 200, { "Cache-Control": "public, max-age=60" });
+});
+
 app.get("/api/setup/status", async (c) => {
   const count = await adminCount(c.env.DB);
   const instance = await instanceInfo(c.env);
@@ -174,6 +421,22 @@ app.get("/api/instance/logo", async (c) => {
   });
 });
 
+app.get("/api/instance/app-icon/:kind", async (c) => {
+  const kind = c.req.param("kind") === "maskable" ? "maskable" : "any";
+  const prefix = kind === "maskable" ? "app_maskable_icon" : "app_icon";
+  const key = await getSetting(c.env.DB, `${prefix}_r2_key`, null) as string | null;
+  const contentType = await getSetting(c.env.DB, `${prefix}_content_type`, null) as string | null;
+  if (!key) return c.json({ error: "Not found" }, 404);
+  const object = await c.env.MEDIA.get(key);
+  if (!object) return c.json({ error: "Not found" }, 404);
+  return new Response(object.body, {
+    headers: {
+      "content-type": contentType || object.httpMetadata?.contentType || "image/png",
+      "cache-control": "public, max-age=300",
+    },
+  });
+});
+
 app.post("/api/setup/admin", async (c) => {
   if (await adminCount(c.env.DB)) return c.json({ error: "Setup is disabled" }, 409);
   if (!c.env.ADMIN_SETUP_TOKEN) return c.json({ error: "ADMIN_SETUP_TOKEN is not configured" }, 500);
@@ -192,9 +455,9 @@ app.post("/api/setup/admin", async (c) => {
   const passwordHash = await bcrypt.hash(password, 10);
   await c.env.DB.prepare(
     `INSERT INTO users
-       (id, email, password_hash, role, display_name, handle, bio, links_json, created_at, updated_at)
-     VALUES (?, ?, ?, 'admin', ?, ?, '', '[]', ?, ?)`,
-  ).bind(id, email, passwordHash, displayName, handle, timestamp, timestamp).run();
+       (id, email, password_hash, role, display_name, handle, bio, links_json, password_changed_at, created_at, updated_at)
+     VALUES (?, ?, ?, 'admin', ?, ?, '', '[]', ?, ?, ?)`,
+  ).bind(id, email, passwordHash, displayName, handle, timestamp, timestamp, timestamp).run();
 
   for (const role of ROLE_SUGGESTIONS) {
     await c.env.DB.prepare(
@@ -211,7 +474,7 @@ app.post("/api/setup/admin", async (c) => {
   const token = await createSession(id, c.env);
   c.header("Set-Cookie", sessionCookie(token));
   const user = await getUserById(c.env.DB, id);
-  return c.json({ user: publicUser(user!, []) }, 201);
+  return c.json({ token, user: await publicUserWithRequirements(c.env.DB, user!, []) }, 201);
 });
 
 app.post("/api/auth/login", async (c) => {
@@ -224,7 +487,7 @@ app.post("/api/auth/login", async (c) => {
   }
   const token = await createSession(user.id, c.env);
   c.header("Set-Cookie", sessionCookie(token));
-  return c.json({ token, user: publicUser(user, await getTags(c.env.DB, user.id)) });
+  return c.json({ token, user: await publicUserWithRequirements(c.env.DB, user, await getTags(c.env.DB, user.id)) });
 });
 
 app.post("/api/auth/logout", (c) => {
@@ -235,9 +498,76 @@ app.post("/api/auth/logout", (c) => {
 app.get("/api/auth/me", requireUser, async (c) => {
   const user = currentUser(c);
   return c.json({
-    user: publicUser(user, await getTags(c.env.DB, user.id)),
+    user: await publicUserWithRequirements(c.env.DB, user, await getTags(c.env.DB, user.id)),
     instance: await instanceInfo(c.env),
   });
+});
+
+app.patch("/api/auth/password", requireUser, async (c) => {
+  const user = currentUser(c);
+  const body = await readBody(c);
+  const currentPassword = stringField(body.current_password || body.currentPassword);
+  const newPassword = stringField(body.new_password || body.newPassword || body.password);
+  if (newPassword.length < 10) return c.json({ error: "New password must be at least 10 characters" }, 400);
+  const row = await c.env.DB.prepare("SELECT password_hash FROM users WHERE id = ?").bind(user.id).first<{ password_hash: string }>();
+  if (!row || !(await bcrypt.compare(currentPassword, row.password_hash))) return c.json({ error: "Current password is incorrect" }, 403);
+  const timestamp = now();
+  await c.env.DB.prepare(
+    `UPDATE users
+     SET password_hash = ?,
+         password_changed_at = ?,
+         force_password_change_at = NULL,
+         updated_at = ?
+     WHERE id = ?`,
+  ).bind(await bcrypt.hash(newPassword, 10), timestamp, timestamp, user.id).run();
+  await insertEvent(c.env, "user.password_changed", user.id, "user", user.id);
+  const updated = await getUserById(c.env.DB, user.id);
+  return c.json({ user: await publicUserWithRequirements(c.env.DB, updated!, await getTags(c.env.DB, user.id)) });
+});
+
+app.post("/api/auth/password-reset/request", async (c) => {
+  const body = await readBody(c);
+  const email = stringField(body.email).toLowerCase();
+  const user = email ? await c.env.DB.prepare("SELECT * FROM users WHERE email = ? AND disabled_at IS NULL").bind(email).first<AppUser>() : null;
+  if (user) {
+    const reset = await createPasswordReset(c, user, null);
+    const instance = await instanceInfo(c.env);
+    const subject = await getSetting(c.env.DB, "password_reset_email_subject", RESET_SUBJECT);
+    const template = await getSetting(c.env.DB, "password_reset_email_body", RESET_BODY);
+    await sendTemplatedEmail(c, user.email, subject, template, {
+      instance_name: instance.name,
+      handle: user.handle,
+      email: user.email,
+      reset_url: reset.reset_url,
+      site_url: absoluteUrl(c, "/"),
+    }).catch((error: unknown) => console.error("password reset email failed", error));
+  }
+  return c.json({ ok: true });
+});
+
+app.post("/api/auth/password-reset/complete", async (c) => {
+  const body = await readBody(c);
+  const token = stringField(body.token);
+  const password = stringField(body.password || body.new_password || body.newPassword);
+  if (!token || password.length < 10) return c.json({ error: "A valid token and password of at least 10 characters are required" }, 400);
+  const row = await c.env.DB.prepare(
+    `SELECT password_reset_tokens.*, users.disabled_at
+     FROM password_reset_tokens
+     JOIN users ON users.id = password_reset_tokens.user_id
+     WHERE token_hash = ?
+       AND password_reset_tokens.used_at IS NULL
+       AND password_reset_tokens.expires_at > ?`,
+  ).bind(await sha256(token), now()).first<{ id: string; user_id: string; disabled_at: string | null }>();
+  if (!row || row.disabled_at) return c.json({ error: "Reset link is invalid or expired" }, 404);
+  const timestamp = now();
+  await c.env.DB.batch([
+    c.env.DB.prepare(
+      "UPDATE users SET password_hash = ?, password_changed_at = ?, force_password_change_at = NULL, updated_at = ? WHERE id = ?",
+    ).bind(await bcrypt.hash(password, 10), timestamp, timestamp, row.user_id),
+    c.env.DB.prepare("UPDATE password_reset_tokens SET used_at = ? WHERE id = ?").bind(timestamp, row.id),
+  ]);
+  await insertEvent(c.env, "user.password_reset", row.user_id, "user", row.user_id);
+  return c.json({ ok: true });
 });
 
 app.get("/api/media/signed/:token", async (c) => {
@@ -269,9 +599,30 @@ app.use("/api/activity", requireUser);
 app.use("/api/tags/*", requireUser);
 app.use("/api/notifications", requireUser);
 app.use("/api/notifications/*", requireUser);
+app.use("/api/rules/*", requireUser);
 app.use("/api/exports", requireUser);
 app.use("/api/exports/*", requireUser);
 app.use("/api/media/*", requireUser);
+
+app.use("/api/*", async (c, next) => {
+  if (!mutatingMethod(c.req.method.toUpperCase()) || interactionGateExempt(c.req.path)) {
+    await next();
+    return;
+  }
+  const user = c.get("user") as AppUser | undefined;
+  if (!user) {
+    await next();
+    return;
+  }
+  const requirements = await userRequirementFields(c.env.DB, user);
+  if (requirements.password_change_required) {
+    return c.json({ error: "Password change required", password_change_required: true }, 423);
+  }
+  if (requirements.rules_required) {
+    return c.json({ error: "Server rules must be accepted first", rules_required: true, current_rule_version_id: requirements.current_rule_version_id }, 428);
+  }
+  await next();
+});
 
 async function requireAdmin(c: Ctx) {
   if (currentUser(c).role !== "admin") {
@@ -279,6 +630,25 @@ async function requireAdmin(c: Ctx) {
   }
   return { ok: true as const };
 }
+
+app.get("/api/rules/current", async (c) => {
+  const status = await ruleAcceptanceStatus(c.env.DB, currentUser(c));
+  return c.json(status);
+});
+
+app.post("/api/rules/accept", async (c) => {
+  const user = currentUser(c);
+  const current = await currentRuleVersion(c.env.DB);
+  if (!current) return c.json({ ok: true, accepted_at: null });
+  const timestamp = now();
+  await c.env.DB.prepare(
+    `INSERT INTO rule_acceptances (rule_version_id, user_id, accepted_at)
+     VALUES (?, ?, ?)
+     ON CONFLICT(rule_version_id, user_id) DO UPDATE SET accepted_at = excluded.accepted_at`,
+  ).bind(current.id, user.id, timestamp).run();
+  await insertEvent(c.env, "rules.accepted", user.id, "rule_version", current.id);
+  return c.json({ ok: true, accepted_at: timestamp, rule_version_id: current.id });
+});
 
 app.get("/api/admin", async (c) => {
   const admin = await requireAdmin(c);
@@ -307,10 +677,17 @@ app.get("/api/admin/events", async (c) => {
 app.get("/api/admin/settings", async (c) => {
   const admin = await requireAdmin(c);
   if (!admin.ok) return admin.response;
-  const rows = await c.env.DB.prepare("SELECT key, value_json, updated_at FROM instance_settings ORDER BY key").all();
+  const rows = await c.env.DB.prepare("SELECT key, value_json, updated_at FROM instance_settings ORDER BY key").all<{ key: string; value_json: string; updated_at: string }>();
+  const redacted = rows.results.map((row) => (
+    row.key.endsWith("_ciphertext") ? { ...row, value_json: jsonText({ value: "configured" }) } : row
+  ));
+  const values = settingRowsToValues(redacted as Array<{ key: string; value_json: string }>);
+  values.smtp_password_set = rows.results.some((row) => row.key === "smtp_password_ciphertext");
+  delete values.smtp_password_ciphertext;
   return c.json({
     ...(await instanceInfo(c.env)),
-    settings: rows.results,
+    settings: redacted,
+    values,
   });
 });
 
@@ -320,12 +697,22 @@ app.post("/api/admin/settings", async (c) => {
   const user = currentUser(c);
   const body = await readBody(c);
   const instanceName = stringField(body.instance_name || body.instanceName);
+  const appName = stringField(body.app_name || body.appName);
+  const appShortName = stringField(body.app_short_name || body.appShortName || "QC").slice(0, 24);
+  const appThemeColor = colorField(body.app_theme_color || body.appThemeColor, "#050505");
+  const appBackgroundColor = colorField(body.app_background_color || body.appBackgroundColor, "#050505");
   const sourceCodeUrl = stringField(body.source_code_url || body.sourceCodeUrl);
   const logo = fileField(body.logo);
+  const appIcon = fileField(body.app_icon || body.appIcon);
+  const maskableIcon = fileField(body.app_maskable_icon || body.appMaskableIcon);
 
   if (instanceName) {
     await setSetting(c.env.DB, "instance_name", instanceName, user.id, "Display name for this community instance.");
   }
+  await setSetting(c.env.DB, "app_name", appName || instanceName || "QuietCollective", user.id, "Installable app name shown by browsers and launchers.");
+  await setSetting(c.env.DB, "app_short_name", appShortName || "QC", user.id, "Short installable app name.");
+  await setSetting(c.env.DB, "app_theme_color", appThemeColor, user.id, "Theme color used by installable app shells.");
+  await setSetting(c.env.DB, "app_background_color", appBackgroundColor, user.id, "Launch background color used by installable app shells.");
   await setSetting(c.env.DB, "source_code_url", sourceCodeUrl, user.id, "AGPL source URL displayed in the app.");
 
   if (logo) {
@@ -334,9 +721,116 @@ app.post("/api/admin/settings", async (c) => {
     await setSetting(c.env.DB, "logo_r2_key", key, user.id, "Optional custom instance logo stored in private R2.");
     await setSetting(c.env.DB, "logo_content_type", logo.type || "application/octet-stream", user.id, "Content type for the custom instance logo.");
   }
+  if (appIcon) {
+    const key = `instance/app-icons/${ulid()}-${appIcon.name || "app-icon"}`;
+    await putR2File(c.env.MEDIA, key, appIcon, { kind: "app_icon" });
+    await setSetting(c.env.DB, "app_icon_r2_key", key, user.id, "Installable app icon stored in private R2.");
+    await setSetting(c.env.DB, "app_icon_content_type", appIcon.type || "image/png", user.id, "Content type for the installable app icon.");
+    await setSetting(c.env.DB, "app_icon_updated_at", now(), user.id, "Cache marker for the installable app icon.");
+  }
+  if (maskableIcon) {
+    const key = `instance/app-icons/${ulid()}-${maskableIcon.name || "maskable-icon"}`;
+    await putR2File(c.env.MEDIA, key, maskableIcon, { kind: "app_maskable_icon" });
+    await setSetting(c.env.DB, "app_maskable_icon_r2_key", key, user.id, "Installable app maskable icon stored in private R2.");
+    await setSetting(c.env.DB, "app_maskable_icon_content_type", maskableIcon.type || "image/png", user.id, "Content type for the installable app maskable icon.");
+    await setSetting(c.env.DB, "app_maskable_icon_updated_at", now(), user.id, "Cache marker for the installable app maskable icon.");
+  }
 
   await insertEvent(c.env, "instance.settings_updated", user.id, "instance", "settings");
   return c.json({ instance: await instanceInfo(c.env) });
+});
+
+app.post("/api/admin/content", async (c) => {
+  const admin = await requireAdmin(c);
+  if (!admin.ok) return admin.response;
+  const user = currentUser(c);
+  const body = await readBody(c);
+  const contentKeys = [
+    ["homepage_subtitle", "Subtitle shown on the signed-in home page."],
+    ["login_subtitle", "Optional subtitle shown on the login page."],
+    ["invite_subtitle", "Optional subtitle shown on invite acceptance pages."],
+    ["content_notice", "Short ownership notice shown in the app chrome."],
+    ["welcome_email_subject", "Subject template for welcome email."],
+    ["welcome_email_body", "Body template for welcome email."],
+    ["password_reset_email_subject", "Subject template for password reset email."],
+    ["password_reset_email_body", "Body template for password reset email."],
+    ["invite_text_template", "Default text copied with new invite links."],
+  ];
+  for (const [key, description] of contentKeys) {
+    if (Object.prototype.hasOwnProperty.call(body, key)) await setSetting(c.env.DB, key, stringField(body[key]), user.id, description);
+  }
+  await insertEvent(c.env, "instance.content_updated", user.id, "instance", "content");
+  return c.json({ instance: await instanceInfo(c.env) });
+});
+
+app.post("/api/admin/email", async (c) => {
+  const admin = await requireAdmin(c);
+  if (!admin.ok) return admin.response;
+  const user = currentUser(c);
+  const body = await readBody(c);
+  const enabled = truthy(body.smtp_enabled || body.enabled);
+  await setSetting(c.env.DB, "smtp_enabled", enabled, user.id, "Whether SMTP delivery is enabled.");
+  await setSetting(c.env.DB, "smtp_host", stringField(body.smtp_host || body.host), user.id, "SMTP host.");
+  await setSetting(c.env.DB, "smtp_port", stringField(body.smtp_port || body.port || "465"), user.id, "SMTP TLS port.");
+  await setSetting(c.env.DB, "smtp_username", stringField(body.smtp_username || body.username), user.id, "SMTP username.");
+  await setSetting(c.env.DB, "smtp_from_email", stringField(body.smtp_from_email || body.from_email), user.id, "SMTP from address.");
+  await setSetting(c.env.DB, "smtp_reply_to", stringField(body.smtp_reply_to || body.reply_to), user.id, "SMTP reply-to address.");
+  const password = stringField(body.smtp_password || body.password);
+  if (password) {
+    await setSetting(c.env.DB, "smtp_password_ciphertext", await encryptString(password, configSecret(c.env)), user.id, "Encrypted SMTP password.");
+  }
+  await insertEvent(c.env, "instance.email_updated", user.id, "instance", "email");
+  return c.json({ ok: true });
+});
+
+app.post("/api/admin/email/test", async (c) => {
+  const admin = await requireAdmin(c);
+  if (!admin.ok) return admin.response;
+  const body = await readBody(c);
+  const user = currentUser(c);
+  const to = stringField(body.to || user.email).toLowerCase();
+  if (!to) return c.json({ error: "Test recipient is required" }, 400);
+  const config = await smtpConfig(c.env);
+  if (!config) return c.json({ error: "Email delivery is not configured" }, 400);
+  const instance = await instanceInfo(c.env);
+  await sendEmail(config, {
+    to,
+    subject: `${instance.name} SMTP test`,
+    text: "This is a test email from QuietCollective.",
+    html: "<p>This is a test email from QuietCollective.</p>",
+  });
+  return c.json({ ok: true });
+});
+
+app.get("/api/admin/users", async (c) => {
+  const admin = await requireAdmin(c);
+  if (!admin.ok) return admin.response;
+  const rows = await c.env.DB.prepare(
+    `SELECT id, email, role, disabled_at, password_changed_at, force_password_change_at,
+            display_name, handle, bio, links_json, profile_image_key, profile_image_content_type,
+            avatar_key, avatar_content_type, avatar_crop_json, last_active_at, created_at, updated_at
+     FROM users
+     ORDER BY created_at DESC`,
+  ).all<AppUser>();
+  const users = [];
+  for (const user of rows.results) users.push(await publicUserWithRequirements(c.env.DB, user, await getTags(c.env.DB, user.id)));
+  return c.json({ users });
+});
+
+app.post("/api/admin/users/:id/role", async (c) => {
+  const admin = await requireAdmin(c);
+  if (!admin.ok) return admin.response;
+  const id = c.req.param("id");
+  const body = await readBody(c);
+  const role = stringField(body.role) === "admin" ? "admin" : "member";
+  const target = await getUserById(c.env.DB, id);
+  if (!target) return c.json({ error: "User not found" }, 404);
+  if (target.role === "admin" && role !== "admin" && (await adminCount(c.env.DB)) <= 1 && !target.disabled_at) {
+    return c.json({ error: "At least one active admin is required" }, 400);
+  }
+  await c.env.DB.prepare("UPDATE users SET role = ?, updated_at = ? WHERE id = ?").bind(role, now(), id).run();
+  await insertEvent(c.env, "user.role_updated", currentUser(c).id, "user", id, null, null, { role });
+  return c.json({ ok: true });
 });
 
 app.post("/api/admin/users/:id/disable", async (c) => {
@@ -344,9 +838,89 @@ app.post("/api/admin/users/:id/disable", async (c) => {
   if (!admin.ok) return admin.response;
   const id = c.req.param("id");
   if (id === currentUser(c).id) return c.json({ error: "You cannot disable yourself" }, 400);
+  const target = await getUserById(c.env.DB, id);
+  if (target?.role === "admin" && (await adminCount(c.env.DB)) <= 1) return c.json({ error: "At least one active admin is required" }, 400);
   await c.env.DB.prepare("UPDATE users SET disabled_at = ?, updated_at = ? WHERE id = ?").bind(now(), now(), id).run();
   await insertEvent(c.env, "user.disabled", currentUser(c).id, "user", id);
   return c.json({ ok: true });
+});
+
+app.post("/api/admin/users/:id/enable", async (c) => {
+  const admin = await requireAdmin(c);
+  if (!admin.ok) return admin.response;
+  const id = c.req.param("id");
+  await c.env.DB.prepare("UPDATE users SET disabled_at = NULL, updated_at = ? WHERE id = ?").bind(now(), id).run();
+  await insertEvent(c.env, "user.enabled", currentUser(c).id, "user", id);
+  return c.json({ ok: true });
+});
+
+app.post("/api/admin/users/:id/force-password-change", async (c) => {
+  const admin = await requireAdmin(c);
+  if (!admin.ok) return admin.response;
+  const id = c.req.param("id");
+  const timestamp = now();
+  await c.env.DB.prepare("UPDATE users SET force_password_change_at = ?, updated_at = ? WHERE id = ?").bind(timestamp, timestamp, id).run();
+  await insertEvent(c.env, "user.password_change_forced", currentUser(c).id, "user", id);
+  return c.json({ ok: true });
+});
+
+app.post("/api/admin/users/:id/password-reset", async (c) => {
+  const admin = await requireAdmin(c);
+  if (!admin.ok) return admin.response;
+  const target = await getUserById(c.env.DB, c.req.param("id"));
+  if (!target || target.disabled_at) return c.json({ error: "User not found" }, 404);
+  const reset = await createPasswordReset(c, target, currentUser(c).id);
+  const instance = await instanceInfo(c.env);
+  const subject = await getSetting(c.env.DB, "password_reset_email_subject", RESET_SUBJECT);
+  const template = await getSetting(c.env.DB, "password_reset_email_body", RESET_BODY);
+  const emailed = await sendTemplatedEmail(c, target.email, subject, template, {
+    instance_name: instance.name,
+    handle: target.handle,
+    email: target.email,
+    reset_url: reset.reset_url,
+    site_url: absoluteUrl(c, "/"),
+  }).catch((error: unknown) => {
+    console.error("admin password reset email failed", error);
+    return false;
+  });
+  await insertEvent(c.env, "user.password_reset_created", currentUser(c).id, "user", target.id);
+  return c.json({ ok: true, emailed, reset_url: reset.reset_url, expires_at: reset.expires_at });
+});
+
+app.get("/api/admin/rules", async (c) => {
+  const admin = await requireAdmin(c);
+  if (!admin.ok) return admin.response;
+  const rows = await c.env.DB.prepare(
+    `SELECT rule_versions.*,
+            users.handle AS created_by_handle,
+            COUNT(rule_acceptances.user_id) AS accepted_count
+     FROM rule_versions
+     LEFT JOIN users ON users.id = rule_versions.created_by
+     LEFT JOIN rule_acceptances ON rule_acceptances.rule_version_id = rule_versions.id
+     GROUP BY rule_versions.id
+     ORDER BY rule_versions.published_at DESC`,
+  ).all<RuleVersionRow>();
+  return c.json({ current: await currentRuleVersion(c.env.DB), versions: rows.results });
+});
+
+app.post("/api/admin/rules", async (c) => {
+  const admin = await requireAdmin(c);
+  if (!admin.ok) return admin.response;
+  const body = await readBody(c);
+  const markdown = stringField(body.body_markdown || body.rules || body.body);
+  if (!markdown.trim()) return c.json({ error: "Rules text is required" }, 400);
+  const id = ulid();
+  const timestamp = now();
+  await c.env.DB.batch([
+    c.env.DB.prepare("UPDATE rule_versions SET superseded_at = ? WHERE superseded_at IS NULL").bind(timestamp),
+    c.env.DB.prepare(
+      `INSERT INTO rule_versions
+         (id, body_markdown, body_html, created_by, created_at, published_at)
+       VALUES (?, ?, ?, ?, ?, ?)`,
+    ).bind(id, markdown, simpleMarkdownToHtml(markdown), currentUser(c).id, timestamp, timestamp),
+  ]);
+  await insertEvent(c.env, "rules.published", currentUser(c).id, "rule_version", id);
+  return c.json({ rule: await currentRuleVersion(c.env.DB) }, 201);
 });
 
 app.post("/api/admin/invites", async (c) => {
@@ -359,13 +933,29 @@ app.post("/api/admin/invites", async (c) => {
   const role = stringField(body.role_on_join || body.roleOnJoin || "member") === "admin" ? "admin" : "member";
   const maxUses = Math.max(1, Math.min(100, Math.floor(numberField(body.max_uses || body.maxUses, 1))));
   const expiresAt = stringField(body.expires_at || body.expiresAt, "") || null;
+  const inviteUrl = absoluteUrl(c, `/invite/${token}`);
+  const inviteTemplate = await getSetting(c.env.DB, "invite_text_template", INVITE_TEXT);
+  const instance = await instanceInfo(c.env);
+  const inviteText = applyTemplate(inviteTemplate, {
+    instance_name: instance.name,
+    invite_url: inviteUrl,
+    role,
+    max_uses: String(maxUses),
+    expires_at: expiresAt || "",
+  });
+  let tokenCiphertext: string | null = null;
+  try {
+    tokenCiphertext = await encryptString(token, configSecret(c.env));
+  } catch (error) {
+    console.error("invite token encryption failed", error);
+  }
   await c.env.DB.prepare(
     `INSERT INTO invites
-       (id, token_hash, created_by, role_on_join, max_uses, use_count, expires_at, created_at, updated_at)
-     VALUES (?, ?, ?, ?, ?, 0, ?, ?, ?)`,
-  ).bind(id, await sha256(token), currentUser(c).id, role, maxUses, expiresAt, timestamp, timestamp).run();
+       (id, token_hash, token_ciphertext, invite_text, created_by, role_on_join, max_uses, use_count, expires_at, created_at, updated_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?)`,
+  ).bind(id, await sha256(token), tokenCiphertext, inviteText, currentUser(c).id, role, maxUses, expiresAt, timestamp, timestamp).run();
   await insertEvent(c.env, "invite.created", currentUser(c).id, "invite", id);
-  return c.json({ invite: { id, token, role_on_join: role, max_uses: maxUses, expires_at: expiresAt, url: `/invite/${token}` } }, 201);
+  return c.json({ invite: { id, token, role_on_join: role, max_uses: maxUses, expires_at: expiresAt, url: `/invite/${token}`, absolute_url: inviteUrl, invite_text: inviteText } }, 201);
 });
 
 app.get("/api/admin/invites", async (c) => {
@@ -376,7 +966,25 @@ app.get("/api/admin/invites", async (c) => {
      FROM invites JOIN users ON users.id = invites.created_by
      ORDER BY invites.created_at DESC`,
   ).all();
-  return c.json({ invites: rows.results });
+  const invites = [];
+  for (const row of rows.results as Array<Record<string, unknown>>) {
+    let token = "";
+    const ciphertext = stringField(row.token_ciphertext);
+    if (ciphertext) {
+      try {
+        token = await decryptString(ciphertext, configSecret(c.env));
+      } catch (error) {
+        console.error("invite token decrypt failed", error);
+      }
+    }
+    invites.push({
+      ...row,
+      token: token || null,
+      url: token ? `/invite/${token}` : null,
+      absolute_url: token ? absoluteUrl(c, `/invite/${token}`) : null,
+    });
+  }
+  return c.json({ invites });
 });
 
 app.post("/api/admin/invites/:id/revoke", async (c) => {
@@ -462,7 +1070,7 @@ app.post("/api/invites/:token/accept", async (c) => {
     if (acceptance && await bcrypt.compare(password, exactExistingUser.password_hash)) {
       const session = await createSession(exactExistingUser.id, c.env);
       c.header("Set-Cookie", sessionCookie(session));
-      return c.json({ token: session, user: publicUser(exactExistingUser, await getTags(c.env.DB, exactExistingUser.id)), duplicate: true });
+      return c.json({ token: session, user: await publicUserWithRequirements(c.env.DB, exactExistingUser, await getTags(c.env.DB, exactExistingUser.id)), duplicate: true });
     }
   }
   if (existingUsers.results.length) {
@@ -477,9 +1085,9 @@ app.post("/api/invites/:token/accept", async (c) => {
     await c.env.DB.batch([
       c.env.DB.prepare(
         `INSERT INTO users
-           (id, email, password_hash, role, display_name, handle, bio, links_json, created_at, updated_at)
-         VALUES (?, ?, ?, ?, ?, ?, '', '[]', ?, ?)`,
-      ).bind(id, email, await bcrypt.hash(password, 10), invite!.role_on_join, displayName, handle, timestamp, timestamp),
+           (id, email, password_hash, role, display_name, handle, bio, links_json, password_changed_at, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, '', '[]', ?, ?, ?)`,
+      ).bind(id, email, await bcrypt.hash(password, 10), invite!.role_on_join, displayName, handle, timestamp, timestamp, timestamp),
       c.env.DB.prepare("UPDATE invites SET use_count = use_count + 1, last_used_at = ?, updated_at = ? WHERE id = ?").bind(timestamp, timestamp, invite!.id),
       c.env.DB.prepare(
         "INSERT INTO invite_acceptances (id, invite_id, accepted_by, accepted_email, role_granted, accepted_at) VALUES (?, ?, ?, ?, ?, ?)",
@@ -492,9 +1100,23 @@ app.post("/api/invites/:token/accept", async (c) => {
 
   await insertEvent(c.env, "user.joined", id, "user", id).catch((error: unknown) => console.error("user.joined event failed", error));
   await insertEvent(c.env, "invite.accepted", id, "invite", invite!.id, "user", id, { invite_id: invite!.id }).catch((error: unknown) => console.error("invite.accepted event failed", error));
+  const newUser = (await getUserById(c.env.DB, id))!;
+  const instance = await instanceInfo(c.env);
+  await sendTemplatedEmail(
+    c,
+    newUser.email,
+    await getSetting(c.env.DB, "welcome_email_subject", WELCOME_SUBJECT),
+    await getSetting(c.env.DB, "welcome_email_body", WELCOME_BODY),
+    {
+      instance_name: instance.name,
+      handle: newUser.handle,
+      email: newUser.email,
+      site_url: absoluteUrl(c, "/"),
+    },
+  ).catch((error: unknown) => console.error("welcome email failed", error));
   const session = await createSession(id, c.env);
   c.header("Set-Cookie", sessionCookie(session));
-  return c.json({ token: session, user: publicUser((await getUserById(c.env.DB, id))!, []) }, 201);
+  return c.json({ token: session, user: await publicUserWithRequirements(c.env.DB, newUser, []) }, 201);
 });
 
 app.get("/api/members", async (c) => {
@@ -580,19 +1202,45 @@ app.post("/api/markdown-assets", async (c) => {
   const file = fileField(body.file || body.image);
   if (!file) return c.json({ error: "Image file is required" }, 400);
   if (!file.type.startsWith("image/")) return c.json({ error: "Only image uploads are supported" }, 415);
+  const previewFile = fileField(body.preview || body.preview_file || body.previewFile) || file;
+  const thumbnailFile = fileField(body.thumbnail || body.thumbnail_file || body.thumbnailFile) || previewFile;
+  if (!previewFile.type.startsWith("image/") || !thumbnailFile.type.startsWith("image/")) return c.json({ error: "Only image uploads are supported" }, 415);
   const targetType = stringField(body.target_type || body.targetType || "draft").slice(0, 40) || "draft";
   const targetId = stringField(body.target_id || body.targetId, "") || null;
   if (targetId && targetType !== "draft" && !(await canViewTarget(c.env.DB, user, targetType, targetId))) return c.json({ error: "Forbidden" }, 403);
   const id = ulid();
-  const key = `markdown-assets/${user.id}/${id}/${file.name || "image"}`;
+  const base = `markdown-assets/${user.id}/${id}`;
+  const key = `${base}/original-${file.name || "image"}`;
+  const previewKey = `${base}/preview-${previewFile.name || file.name || "image"}`;
+  const thumbnailKey = `${base}/thumbnail-${thumbnailFile.name || previewFile.name || file.name || "image"}`;
   const timestamp = now();
-  await putR2File(c.env.MEDIA, key, file, { owner: user.id, kind: "markdown_asset", target_type: targetType, target_id: targetId || "" });
+  await putR2File(c.env.MEDIA, key, file, { owner: user.id, kind: "markdown_asset", target_type: targetType, target_id: targetId || "", variant: "original" });
+  await putR2File(c.env.MEDIA, previewKey, previewFile, { owner: user.id, kind: "markdown_asset", target_type: targetType, target_id: targetId || "", variant: "preview" });
+  await putR2File(c.env.MEDIA, thumbnailKey, thumbnailFile, { owner: user.id, kind: "markdown_asset", target_type: targetType, target_id: targetId || "", variant: "thumbnail" });
   await c.env.DB.prepare(
     `INSERT INTO markdown_assets
-       (id, owner_user_id, target_type, target_id, r2_key, content_type, original_filename, created_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-  ).bind(id, user.id, targetType, targetId, key, file.type || "application/octet-stream", file.name || "image", timestamp).run();
-  return c.json({ url: `/api/media/markdown-assets/${id}`, data: { filePath: `/api/media/markdown-assets/${id}` } }, 201);
+       (id, owner_user_id, target_type, target_id, r2_key, content_type, original_filename, created_at,
+        preview_r2_key, preview_content_type, thumbnail_r2_key, thumbnail_content_type)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+  ).bind(
+    id,
+    user.id,
+    targetType,
+    targetId,
+    key,
+    file.type || "application/octet-stream",
+    file.name || "image",
+    timestamp,
+    previewKey,
+    previewFile.type || file.type || "application/octet-stream",
+    thumbnailKey,
+    thumbnailFile.type || previewFile.type || file.type || "application/octet-stream",
+  ).run();
+  return c.json({
+    url: `/api/media/markdown-assets/${id}/preview`,
+    thumbnail_url: `/api/media/markdown-assets/${id}/thumbnail`,
+    data: { filePath: `/api/media/markdown-assets/${id}/preview` },
+  }, 201);
 });
 
 app.get("/api/role-suggestions", async (c) => {
@@ -731,11 +1379,10 @@ app.get("/api/galleries/:id", async (c) => {
 
 app.get("/api/galleries/:id/crosspost-candidates", async (c) => {
   const galleryId = c.req.param("id");
-  const galleryGate = await assertGalleryCapability(c, galleryId, "upload_work");
+  const galleryGate = await assertGalleryCrosspostTarget(c, galleryId);
   if (!galleryGate.ok) return galleryGate.response;
   const user = currentUser(c);
-  const gallery = await c.env.DB.prepare("SELECT * FROM galleries WHERE id = ?").bind(galleryId).first<GalleryRow>();
-  if (!gallery) return c.json({ error: "Not found" }, 404);
+  const gallery = galleryGate.gallery;
   const targetRank = galleryVisibilityRank(gallery);
   const rows = await c.env.DB.prepare(
     `SELECT works.*,
@@ -1185,7 +1832,7 @@ app.post("/api/works/:id/galleries", async (c) => {
   const body = await readBody(c);
   const galleryId = stringField(body.gallery_id || body.galleryId);
   if (!galleryId) return c.json({ error: "Gallery is required" }, 400);
-  const galleryGate = await assertGalleryCapability(c, galleryId, "upload_work");
+  const galleryGate = await assertGalleryCrosspostTarget(c, galleryId);
   if (!galleryGate.ok) return galleryGate.response;
   const timestamp = now();
   await c.env.DB.batch([
@@ -1237,27 +1884,31 @@ app.post("/api/works/:id/versions", async (c) => {
 });
 
 app.post("/api/works/:id/feedback-requested", async (c) => {
+  const user = currentUser(c);
   const body = await readBody(c);
   const requested = body.feedback_requested == null ? true : truthy(body.feedback_requested);
-  const gate = await assertWorkCapability(c, c.req.param("id"), requested ? "edit" : "view");
+  const gate = await assertWorkCapability(c, c.req.param("id"), "view");
   if (!gate.ok) return gate.response;
-  if (!requested && !gate.caps.edit && !gate.caps.comment) return c.json({ error: "Forbidden" }, 403);
+  if (gate.work!.created_by !== user.id) return c.json({ error: "Only the work owner can change the feedback request for everyone" }, 403);
   const timestamp = now();
-  await c.env.DB.prepare(
-    `UPDATE works
-     SET feedback_requested = ?,
-         feedback_requested_at = ?,
-         feedback_prompt = ?,
-         updated_at = ?
-     WHERE id = ?`,
-  ).bind(
-    requested ? 1 : 0,
-    requested ? timestamp : null,
-    requested ? (stringField(body.feedback_prompt || body.feedbackPrompt, "") || gate.work!.feedback_prompt || null) : null,
-    timestamp,
-    c.req.param("id"),
-  ).run();
-  if (requested) await insertEvent(c.env, "work.feedback_requested", currentUser(c).id, "work", c.req.param("id"));
+  await c.env.DB.batch([
+    c.env.DB.prepare(
+      `UPDATE works
+       SET feedback_requested = ?,
+           feedback_requested_at = ?,
+           feedback_prompt = ?,
+           updated_at = ?
+       WHERE id = ?`,
+    ).bind(
+      requested ? 1 : 0,
+      requested ? timestamp : null,
+      requested ? (stringField(body.feedback_prompt || body.feedbackPrompt, "") || gate.work!.feedback_prompt || null) : null,
+      timestamp,
+      c.req.param("id"),
+    ),
+    c.env.DB.prepare("DELETE FROM feedback_request_dismissals WHERE work_id = ?").bind(c.req.param("id")),
+  ]);
+  if (requested) await insertEvent(c.env, "work.feedback_requested", user.id, "work", c.req.param("id"));
   return c.json({ ok: true, feedback_requested: requested });
 });
 
@@ -1294,12 +1945,29 @@ app.patch("/api/works/:id/collaborators/:collaboratorId", async (c) => {
   const gate = await assertWorkCapability(c, c.req.param("id"), "edit");
   if (!gate.ok) return gate.response;
   const body = await readBody(c);
+  const identityText = stringField(body.user || body.collaborator_user || body.collaboratorUser || body.display_name || body.displayName, "");
+  const hasIdentity = body.user != null || body.collaborator_user != null || body.collaboratorUser != null || body.display_name != null || body.displayName != null || body.user_id != null || body.userId != null;
+  let linkedUserId = stringField(body.user_id || body.userId, "") || null;
+  let linkedUser: AppUser | null = linkedUserId ? (await getUserById(c.env.DB, linkedUserId)) || null : null;
+  if (linkedUserId && !linkedUser) return c.json({ error: "User not found" }, 400);
+  if (!linkedUser && identityText.startsWith("@")) {
+    linkedUser = (await getUserByHandle(c.env.DB, identityText.slice(1))) || null;
+    linkedUserId = linkedUser?.id || null;
+  }
+  const displayName = hasIdentity ? linkedUser?.handle || identityText : null;
+  if (hasIdentity && !displayName) return c.json({ error: "User or collaborator name is required" }, 400);
+  if (linkedUserId) {
+    const duplicate = await c.env.DB.prepare(
+      "SELECT id FROM work_collaborators WHERE work_id = ? AND user_id = ? AND id <> ?",
+    ).bind(c.req.param("id"), linkedUserId, c.req.param("collaboratorId")).first<{ id: string }>();
+    if (duplicate) return c.json({ error: "That user is already credited on this work" }, 400);
+  }
   const roleLabel = normalizeRoleLabel(stringField(body.role_label || body.roleLabel, ""));
   const roleSuggestionId = roleLabel ? await ensureWorkRoleSuggestion(c.env.DB, roleLabel, currentUser(c).id) : null;
   await c.env.DB.prepare(
     `UPDATE work_collaborators
-     SET display_name = COALESCE(?, display_name),
-         user_id = COALESCE(?, user_id),
+     SET display_name = CASE WHEN ? THEN ? ELSE display_name END,
+         user_id = CASE WHEN ? THEN ? ELSE user_id END,
          role_suggestion_id = COALESCE(?, role_suggestion_id),
          role_label = COALESCE(?, role_label),
          credit_order = COALESCE(?, credit_order),
@@ -1307,8 +1975,10 @@ app.patch("/api/works/:id/collaborators/:collaboratorId", async (c) => {
          updated_at = ?
      WHERE id = ? AND work_id = ?`,
   ).bind(
-    stringField(body.display_name || body.displayName, "") || null,
-    stringField(body.user_id || body.userId, "") || null,
+    hasIdentity ? 1 : 0,
+    displayName,
+    hasIdentity ? 1 : 0,
+    linkedUserId,
     roleSuggestionId,
     roleLabel || null,
     body.credit_order == null && body.creditOrder == null ? null : Math.floor(numberField(body.credit_order || body.creditOrder, 0)),
@@ -1631,24 +2301,134 @@ app.get("/api/notifications/poll", async (c) => {
   const cache = { etag, fresh: etagMatches(c.req.header("if-none-match"), etag) };
   if (cache.fresh) return apiNotModified(cache);
   const rows = await c.env.DB.prepare(
-    `SELECT id, type, title, body, action_url, created_at
-     FROM notifications
-     WHERE user_id = ?
-       AND read_at IS NULL
-       AND (? = '' OR created_at > ?)
-     ORDER BY created_at DESC
-     LIMIT 5`,
-  ).bind(user.id, since, since).all<{ id: string; type: string; title: string; body: string; action_url: string | null; created_at: string }>();
-  c.header("X-Active-Poll-Interval-Ms", String(BROWSER_NOTIFICATION_ACTIVE_POLL_INTERVAL_MS));
+    `WITH recent AS (
+       SELECT domain_events.*,
+              notifications.id AS notification_id,
+              notifications.event_id AS notification_event_id,
+              notifications.type AS notification_type,
+              notifications.title AS notification_title,
+              notifications.body AS notification_body,
+              notifications.action_url AS notification_action_url,
+              notifications.read_at AS notification_read_at,
+              notifications.created_at AS notification_created_at
+       FROM notifications
+       JOIN domain_events ON domain_events.id = notifications.event_id
+       WHERE notifications.user_id = ?
+         AND notifications.read_at IS NULL
+         AND (? = '' OR notifications.created_at > ?)
+       ORDER BY notifications.created_at DESC LIMIT 5
+     )
+     ${ACTIVITY_CONTEXT_SELECT}
+     ORDER BY recent.notification_created_at DESC`,
+  ).bind(user.id, since, since).all<NotificationActivityJoinedRow>();
+  const { galleryIds, workIds } = collectActivityVisibilityIds(rows.results);
+  const [galleries, works] = await Promise.all([
+    visibleGalleryIds(c.env.DB, user, galleryIds),
+    visibleWorkIds(c.env.DB, user, workIds),
+  ]);
+  const thumbnailCache = new Map<string, Promise<string | null>>();
+  const visibleRows = rows.results.filter((row) => joinedEventVisible(user, row, galleries, works));
+  const notifications = await Promise.all(visibleRows.map(async (row) => {
+    const activity = await activityEntryFromJoinedRow(c.env, user, row, thumbnailCache).catch(() => null);
+    return {
+      id: row.notification_id,
+      type: row.notification_type,
+      title: row.notification_title || "",
+      body: activity?.summary || row.notification_body,
+      action_url: row.notification_action_url || activity?.href || "/",
+      created_at: row.notification_created_at,
+    };
+  }));
+  c.header("X-Recent-Poll-Interval-Ms", String(BROWSER_NOTIFICATION_RECENT_POLL_INTERVAL_MS));
+  c.header("X-Followup-Poll-Interval-Ms", String(BROWSER_NOTIFICATION_FOLLOWUP_POLL_INTERVAL_MS));
+  c.header("X-Active-Poll-Interval-Ms", String(BROWSER_NOTIFICATION_FOLLOWUP_POLL_INTERVAL_MS));
   c.header("X-Idle-Poll-Interval-Ms", String(BROWSER_NOTIFICATION_IDLE_POLL_INTERVAL_MS));
   return cacheableJson(c, cache, {
+    recent_interval_ms: BROWSER_NOTIFICATION_RECENT_POLL_INTERVAL_MS,
+    recent_window_ms: BROWSER_NOTIFICATION_RECENT_WINDOW_MS,
+    followup_interval_ms: BROWSER_NOTIFICATION_FOLLOWUP_POLL_INTERVAL_MS,
+    followup_window_ms: BROWSER_NOTIFICATION_FOLLOWUP_WINDOW_MS,
     active_interval_ms: BROWSER_NOTIFICATION_ACTIVE_POLL_INTERVAL_MS,
     idle_interval_ms: BROWSER_NOTIFICATION_IDLE_POLL_INTERVAL_MS,
     active_window_ms: BROWSER_NOTIFICATION_ACTIVE_WINDOW_MS,
     unread_count: watermark?.unread_count || 0,
     latest_created_at: watermark?.latest_created_at || null,
-    notifications: rows.results,
+    notifications,
   });
+});
+
+app.get("/api/notifications/push-public-key", async (c) => {
+  const publicKey = c.env.VAPID_PUBLIC_KEY?.trim() || "";
+  return c.json({ available: webPushConfigured(c.env), public_key: publicKey });
+});
+
+app.post("/api/notifications/push-subscriptions", async (c) => {
+  if (!webPushConfigured(c.env)) return c.json({ error: "Web push is not configured" }, 503);
+  const user = currentUser(c);
+  const body = await readBody(c) as Record<string, unknown>;
+  const keys = body.keys && typeof body.keys === "object" ? body.keys as Record<string, unknown> : {};
+  const endpoint = stringField(body.endpoint).trim();
+  const p256dh = stringField(keys.p256dh).trim();
+  const auth = stringField(keys.auth).trim();
+  const rawExpiration = body.expirationTime ?? body.expiration_time;
+  const expirationTime = typeof rawExpiration === "number" && Number.isFinite(rawExpiration)
+    ? Math.max(0, Math.floor(rawExpiration))
+    : null;
+
+  let endpointUrl: URL;
+  try {
+    endpointUrl = new URL(endpoint);
+  } catch {
+    return c.json({ error: "A valid push endpoint is required" }, 400);
+  }
+  if (endpointUrl.protocol !== "https:") return c.json({ error: "Push endpoints must use HTTPS" }, 400);
+  if (!p256dh || !auth || p256dh.length > 512 || auth.length > 256) {
+    return c.json({ error: "Push subscription keys are required" }, 400);
+  }
+
+  const timestamp = now();
+  await c.env.DB.prepare(
+    `INSERT INTO push_subscriptions
+       (id, user_id, endpoint, p256dh, auth, expiration_time, user_agent, created_at, updated_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+     ON CONFLICT(endpoint) DO UPDATE SET
+       user_id = excluded.user_id,
+       p256dh = excluded.p256dh,
+       auth = excluded.auth,
+       expiration_time = excluded.expiration_time,
+       user_agent = excluded.user_agent,
+       error_count = 0,
+       last_error_at = NULL,
+       disabled_at = NULL,
+       updated_at = excluded.updated_at`,
+  ).bind(
+    ulid(),
+    user.id,
+    endpoint,
+    p256dh,
+    auth,
+    expirationTime,
+    stringField(c.req.header("user-agent")).slice(0, 300),
+    timestamp,
+    timestamp,
+  ).run();
+  return c.json({ ok: true });
+});
+
+app.delete("/api/notifications/push-subscriptions", async (c) => {
+  const user = currentUser(c);
+  const body = await readBody(c).catch(() => ({})) as Record<string, unknown>;
+  const endpoint = stringField(body.endpoint || c.req.query("endpoint")).trim();
+  if (!endpoint) return c.json({ ok: true, disabled: false });
+  const timestamp = now();
+  await c.env.DB.prepare(
+    `UPDATE push_subscriptions
+     SET disabled_at = COALESCE(disabled_at, ?),
+         updated_at = ?
+     WHERE user_id = ?
+       AND endpoint = ?`,
+  ).bind(timestamp, timestamp, user.id, endpoint).run();
+  return c.json({ ok: true, disabled: true });
 });
 
 app.post("/api/notifications/:id/read", async (c) => {
@@ -1916,17 +2696,56 @@ app.get("/api/media/markdown-assets/:id", async (c) => {
     target_id: string | null;
     r2_key: string;
     content_type: string;
+    preview_r2_key?: string | null;
+    preview_content_type?: string | null;
   }>();
   if (!asset) return c.json({ error: "Not found" }, 404);
   const user = currentUser(c);
   if (asset.owner_user_id !== user.id && asset.target_id && asset.target_type !== "draft" && !(await canViewTarget(c.env.DB, user, asset.target_type, asset.target_id))) {
     return c.json({ error: "Forbidden" }, 403);
   }
-  const object = await c.env.MEDIA.get(asset.r2_key);
+  const key = asset.preview_r2_key || asset.r2_key;
+  const contentType = asset.preview_r2_key ? asset.preview_content_type : asset.content_type;
+  const object = await c.env.MEDIA.get(key);
   if (!object) return c.json({ error: "Not found" }, 404);
   return new Response(object.body, {
     headers: {
-      "content-type": asset.content_type || object.httpMetadata?.contentType || "application/octet-stream",
+      "content-type": contentType || object.httpMetadata?.contentType || "application/octet-stream",
+      "cache-control": "private, max-age=300",
+    },
+  });
+});
+
+app.get("/api/media/markdown-assets/:id/:variant", async (c) => {
+  const asset = await c.env.DB.prepare("SELECT * FROM markdown_assets WHERE id = ?").bind(c.req.param("id")).first<{
+    owner_user_id: string;
+    target_type: string;
+    target_id: string | null;
+    r2_key: string;
+    content_type: string;
+    preview_r2_key?: string | null;
+    preview_content_type?: string | null;
+    thumbnail_r2_key?: string | null;
+    thumbnail_content_type?: string | null;
+  }>();
+  if (!asset) return c.json({ error: "Not found" }, 404);
+  const user = currentUser(c);
+  if (asset.owner_user_id !== user.id && asset.target_id && asset.target_type !== "draft" && !(await canViewTarget(c.env.DB, user, asset.target_type, asset.target_id))) {
+    return c.json({ error: "Forbidden" }, 403);
+  }
+  const variant = c.req.param("variant");
+  if (!["original", "preview", "thumbnail"].includes(variant)) return c.json({ error: "Not found" }, 404);
+  const key = variant === "thumbnail" ? asset.thumbnail_r2_key || asset.preview_r2_key || asset.r2_key : variant === "original" ? asset.r2_key : asset.preview_r2_key || asset.r2_key;
+  const contentType = variant === "thumbnail"
+    ? asset.thumbnail_content_type || asset.preview_content_type || asset.content_type
+    : variant === "original"
+      ? asset.content_type
+      : asset.preview_content_type || asset.content_type;
+  const object = await c.env.MEDIA.get(key);
+  if (!object) return c.json({ error: "Not found" }, 404);
+  return new Response(object.body, {
+    headers: {
+      "content-type": contentType || object.httpMetadata?.contentType || "application/octet-stream",
       "cache-control": "private, max-age=300",
     },
   });

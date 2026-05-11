@@ -41,6 +41,38 @@ function bindReactionButtons() {
   });
 }
 
+function openMarkdownImageModal(src, alt = "") {
+  const overlay = document.createElement("div");
+  overlay.className = "modal-backdrop markdown-image-modal-backdrop";
+  overlay.innerHTML = `<section class="modal-panel markdown-image-modal" role="dialog" aria-modal="true" aria-label="Image preview"><button class="icon-button markdown-image-modal-close" type="button" data-close-modal aria-label="Close" title="Close">${icon("x")}</button><img src="${escapeHtml(src)}" alt="${escapeHtml(alt)}"></section>`;
+  const close = () => {
+    document.removeEventListener("keydown", onKeydown);
+    overlay.remove();
+  };
+  const onKeydown = (event) => {
+    if (event.key === "Escape") close();
+  };
+  document.body.append(overlay);
+  document.addEventListener("keydown", onKeydown);
+  overlay.querySelector("[data-close-modal]")?.addEventListener("click", close);
+  overlay.addEventListener("click", (event) => {
+    if (event.target === overlay) close();
+  });
+}
+
+function bindMarkdownImageLinks(scope = document) {
+  scope.querySelectorAll("[data-markdown-image-full]:not([data-markdown-image-bound])").forEach((linkEl) => {
+    linkEl.dataset.markdownImageBound = "true";
+    linkEl.addEventListener("click", (event) => {
+      if (event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
+      const src = linkEl.dataset.markdownImageFull || linkEl.getAttribute("href");
+      if (!src) return;
+      event.preventDefault();
+      openMarkdownImageModal(src, linkEl.querySelector("img")?.getAttribute("alt") || "");
+    });
+  });
+}
+
 function bindNotificationActions() {
   bindNotificationMenu();
   document.querySelector("[data-notifications-read-all]")?.addEventListener("click", async () => {
@@ -184,4 +216,4 @@ function bindReplyButtons() {
   });
 }
 
-export { bindNotificationActions, bindReactionButtons, bindReplyButtons, reactionButton };
+export { bindMarkdownImageLinks, bindNotificationActions, bindReactionButtons, bindReplyButtons, reactionButton };

@@ -14,6 +14,11 @@ export interface Env {
   SMTP_USERNAME?: string;
   SMTP_PASSWORD?: string;
   SMTP_FROM_EMAIL?: string;
+  SMTP_REPLY_TO?: string;
+  SMTP_CONFIG_SECRET?: string;
+  VAPID_PUBLIC_KEY?: string;
+  VAPID_PRIVATE_KEY?: string;
+  VAPID_SUBJECT?: string;
 }
 
 export interface AppUser {
@@ -21,6 +26,8 @@ export interface AppUser {
   email: string;
   role: Role;
   disabled_at: string | null;
+  password_changed_at: string | null;
+  force_password_change_at: string | null;
   display_name: string;
   handle: string;
   bio: string;

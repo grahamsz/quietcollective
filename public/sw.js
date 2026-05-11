@@ -1,19 +1,25 @@
-const CACHE_NAME = "quietcollective-shell-v16";
+const CACHE_NAME = "quietcollective-shell-c6f4d017b759";
+const STYLES_CSS_URL = "/styles.css?v=788cc52c4d00";
+const APP_JS_URL = "/app.js?v=a6594ac501a3";
+const MANIFEST_URL = "/manifest.webmanifest?v=7703ee8ba8cf";
 const NOTIFICATION_STATE_CACHE = "quietcollective-notification-state-v1";
 const NOTIFICATION_STATE_URL = "/__quietcollective_notification_state__";
-const NOTIFICATION_ACTIVE_POLL_INTERVAL_MS = 5 * 60 * 1000;
+const NOTIFICATION_RECENT_POLL_INTERVAL_MS = 60 * 1000;
+const NOTIFICATION_RECENT_WINDOW_MS = 30 * 60 * 1000;
+const NOTIFICATION_FOLLOWUP_POLL_INTERVAL_MS = 5 * 60 * 1000;
+const NOTIFICATION_FOLLOWUP_WINDOW_MS = 2 * 60 * 60 * 1000;
 const NOTIFICATION_IDLE_POLL_INTERVAL_MS = 30 * 60 * 1000;
-const NOTIFICATION_ACTIVE_WINDOW_MS = 60 * 60 * 1000;
-const STATIC_PATHS = [
+const STATIC_URLS = [
   "/",
   "/index.html",
-  "/styles.css",
-  "/app.js",
+  STYLES_CSS_URL,
+  APP_JS_URL,
   "/vendor/easymde/easymde.min.css",
   "/vendor/easymde/easymde.min.js",
-  "/manifest.webmanifest",
+  MANIFEST_URL,
   "/icon.svg",
 ];
+const STATIC_PATHS = new Set(STATIC_URLS.map((path) => new URL(path, self.location.origin).pathname));
 
 const APP_PATHS = [
   "/setup",
@@ -46,7 +52,7 @@ function isNeverCached(pathname) {
 
 async function cacheShell() {
   const cache = await caches.open(CACHE_NAME);
-  await cache.addAll(STATIC_PATHS);
+  await cache.addAll(STATIC_URLS);
   const shell = await cache.match("/index.html");
   if (shell) {
     await Promise.all(APP_PATHS.map((path) => cache.put(path, shell.clone())));
@@ -68,22 +74,46 @@ self.addEventListener("activate", (event) => {
 async function readNotificationState() {
   const cache = await caches.open(NOTIFICATION_STATE_CACHE);
   const response = await cache.match(NOTIFICATION_STATE_URL);
-  if (!response) return { enabled: false, etag: "", latestCreatedAt: "", lastPollAt: 0, lastUsedAt: 0, activeIntervalMs: NOTIFICATION_ACTIVE_POLL_INTERVAL_MS, idleIntervalMs: NOTIFICATION_IDLE_POLL_INTERVAL_MS, activeWindowMs: NOTIFICATION_ACTIVE_WINDOW_MS };
+  if (!response) return defaultNotificationState();
   try {
     return {
-      enabled: false,
-      etag: "",
-      latestCreatedAt: "",
-      lastPollAt: 0,
-      lastUsedAt: 0,
-      activeIntervalMs: NOTIFICATION_ACTIVE_POLL_INTERVAL_MS,
-      idleIntervalMs: NOTIFICATION_IDLE_POLL_INTERVAL_MS,
-      activeWindowMs: NOTIFICATION_ACTIVE_WINDOW_MS,
+      ...defaultNotificationState(),
       ...(await response.json()),
     };
   } catch {
-    return { enabled: false, etag: "", latestCreatedAt: "", lastPollAt: 0, lastUsedAt: 0, activeIntervalMs: NOTIFICATION_ACTIVE_POLL_INTERVAL_MS, idleIntervalMs: NOTIFICATION_IDLE_POLL_INTERVAL_MS, activeWindowMs: NOTIFICATION_ACTIVE_WINDOW_MS };
+    return defaultNotificationState();
   }
+}
+
+function defaultNotificationState() {
+  return {
+    enabled: false,
+    etag: "",
+    latestCreatedAt: "",
+    lastPollAt: 0,
+    lastUsedAt: 0,
+    recentIntervalMs: NOTIFICATION_RECENT_POLL_INTERVAL_MS,
+    recentWindowMs: NOTIFICATION_RECENT_WINDOW_MS,
+    followupIntervalMs: NOTIFICATION_FOLLOWUP_POLL_INTERVAL_MS,
+    followupWindowMs: NOTIFICATION_FOLLOWUP_WINDOW_MS,
+    idleIntervalMs: NOTIFICATION_IDLE_POLL_INTERVAL_MS,
+    pushSubscribed: false,
+  };
+}
+
+function notificationPollIntervalMs(state, timestamp = Date.now()) {
+  const recentInterval = Math.max(Number(state.recentIntervalMs || NOTIFICATION_RECENT_POLL_INTERVAL_MS), NOTIFICATION_RECENT_POLL_INTERVAL_MS);
+  const recentWindow = Math.max(Number(state.recentWindowMs || NOTIFICATION_RECENT_WINDOW_MS), NOTIFICATION_RECENT_WINDOW_MS);
+  const followupInterval = Math.max(Number(state.followupIntervalMs || NOTIFICATION_FOLLOWUP_POLL_INTERVAL_MS), NOTIFICATION_FOLLOWUP_POLL_INTERVAL_MS);
+  const followupWindow = Math.max(Number(state.followupWindowMs || NOTIFICATION_FOLLOWUP_WINDOW_MS), NOTIFICATION_FOLLOWUP_WINDOW_MS);
+  const idleInterval = Math.max(Number(state.idleIntervalMs || NOTIFICATION_IDLE_POLL_INTERVAL_MS), NOTIFICATION_IDLE_POLL_INTERVAL_MS);
+  if (state.pushSubscribed) return idleInterval;
+  const lastUsedAt = Number(state.lastUsedAt || 0);
+  if (!lastUsedAt) return idleInterval;
+  const elapsed = timestamp - lastUsedAt;
+  if (elapsed <= recentWindow) return recentInterval;
+  if (elapsed <= recentWindow + followupWindow) return followupInterval;
+  return idleInterval;
 }
 
 async function writeNotificationState(state) {
@@ -99,7 +129,7 @@ async function showNotificationItem(item) {
   await self.registration.showNotification(title, {
     body,
     tag: item.id,
-    data: { url: item.action_url || "/" },
+    data: { notificationId: item.id, url: item.action_url || "/" },
   });
 }
 
@@ -112,11 +142,7 @@ async function pollNotifications(options = {}) {
   const state = await readNotificationState();
   if (!state.enabled) return;
   const timestamp = Date.now();
-  const activeInterval = Math.max(Number(state.activeIntervalMs || NOTIFICATION_ACTIVE_POLL_INTERVAL_MS), NOTIFICATION_ACTIVE_POLL_INTERVAL_MS);
-  const idleInterval = Math.max(Number(state.idleIntervalMs || NOTIFICATION_IDLE_POLL_INTERVAL_MS), NOTIFICATION_IDLE_POLL_INTERVAL_MS);
-  const activeWindow = Math.max(Number(state.activeWindowMs || NOTIFICATION_ACTIVE_WINDOW_MS), NOTIFICATION_ACTIVE_WINDOW_MS);
-  const recentlyUsed = timestamp - Number(state.lastUsedAt || 0) <= activeWindow;
-  const interval = recentlyUsed ? activeInterval : idleInterval;
+  const interval = notificationPollIntervalMs(state, timestamp);
   if (!options.force && timestamp - Number(state.lastPollAt || 0) < interval) return;
 
   const headers = new Headers();
@@ -181,9 +207,12 @@ self.addEventListener("message", (event) => {
         enabled: true,
         lastUsedAt: Date.now(),
         latestCreatedAt: state.latestCreatedAt || new Date().toISOString(),
-        activeIntervalMs: Math.max(Number(data.activeIntervalMs || NOTIFICATION_ACTIVE_POLL_INTERVAL_MS), NOTIFICATION_ACTIVE_POLL_INTERVAL_MS),
+        recentIntervalMs: Math.max(Number(data.recentIntervalMs || NOTIFICATION_RECENT_POLL_INTERVAL_MS), NOTIFICATION_RECENT_POLL_INTERVAL_MS),
+        recentWindowMs: Math.max(Number(data.recentWindowMs || NOTIFICATION_RECENT_WINDOW_MS), NOTIFICATION_RECENT_WINDOW_MS),
+        followupIntervalMs: Math.max(Number(data.followupIntervalMs || NOTIFICATION_FOLLOWUP_POLL_INTERVAL_MS), NOTIFICATION_FOLLOWUP_POLL_INTERVAL_MS),
+        followupWindowMs: Math.max(Number(data.followupWindowMs || NOTIFICATION_FOLLOWUP_WINDOW_MS), NOTIFICATION_FOLLOWUP_WINDOW_MS),
         idleIntervalMs: Math.max(Number(data.idleIntervalMs || NOTIFICATION_IDLE_POLL_INTERVAL_MS), NOTIFICATION_IDLE_POLL_INTERVAL_MS),
-        activeWindowMs: Math.max(Number(data.activeWindowMs || NOTIFICATION_ACTIVE_WINDOW_MS), NOTIFICATION_ACTIVE_WINDOW_MS),
+        pushSubscribed: !!data.pushSubscribed,
       });
       if (data.pollNow) await pollNotifications({ force: true, suppressExisting: !!data.suppressExisting });
     })());
@@ -195,15 +224,18 @@ self.addEventListener("message", (event) => {
       await writeNotificationState({
         ...state,
         lastUsedAt: Date.now(),
-        activeIntervalMs: Math.max(Number(data.activeIntervalMs || NOTIFICATION_ACTIVE_POLL_INTERVAL_MS), NOTIFICATION_ACTIVE_POLL_INTERVAL_MS),
+        recentIntervalMs: Math.max(Number(data.recentIntervalMs || NOTIFICATION_RECENT_POLL_INTERVAL_MS), NOTIFICATION_RECENT_POLL_INTERVAL_MS),
+        recentWindowMs: Math.max(Number(data.recentWindowMs || NOTIFICATION_RECENT_WINDOW_MS), NOTIFICATION_RECENT_WINDOW_MS),
+        followupIntervalMs: Math.max(Number(data.followupIntervalMs || NOTIFICATION_FOLLOWUP_POLL_INTERVAL_MS), NOTIFICATION_FOLLOWUP_POLL_INTERVAL_MS),
+        followupWindowMs: Math.max(Number(data.followupWindowMs || NOTIFICATION_FOLLOWUP_WINDOW_MS), NOTIFICATION_FOLLOWUP_WINDOW_MS),
         idleIntervalMs: Math.max(Number(data.idleIntervalMs || NOTIFICATION_IDLE_POLL_INTERVAL_MS), NOTIFICATION_IDLE_POLL_INTERVAL_MS),
-        activeWindowMs: Math.max(Number(data.activeWindowMs || NOTIFICATION_ACTIVE_WINDOW_MS), NOTIFICATION_ACTIVE_WINDOW_MS),
+        pushSubscribed: !!data.pushSubscribed,
       });
     })());
   }
   if (data.type === "qc-notifications-disable") {
     event.waitUntil(readNotificationState().then(async (state) => {
-      await writeNotificationState({ ...state, enabled: false, unreadCount: 0 });
+      await writeNotificationState({ ...state, enabled: false, pushSubscribed: false, unreadCount: 0 });
       await broadcastNotificationStatus(0);
     }));
   }
@@ -216,18 +248,51 @@ self.addEventListener("periodicsync", (event) => {
   if (event.tag === "qc-notifications") event.waitUntil(pollNotifications());
 });
 
+self.addEventListener("push", (event) => {
+  event.waitUntil(pollNotifications({ force: true }));
+});
+
+self.addEventListener("pushsubscriptionchange", (event) => {
+  event.waitUntil(readNotificationState().then(async (state) => {
+    await writeNotificationState({ ...state, enabled: false, pushSubscribed: false, unreadCount: 0 });
+    await broadcastNotificationStatus(0);
+  }));
+});
+
 self.addEventListener("notificationclick", (event) => {
   event.notification.close();
-  const url = new URL(event.notification.data?.url || "/", self.location.origin).href;
+  const targetUrl = new URL(event.notification.data?.url || "/", self.location.origin);
+  const notificationId = String(event.notification.data?.notificationId || event.notification.tag || "");
+  if (targetUrl.origin !== self.location.origin) {
+    targetUrl.href = self.location.origin;
+  }
   event.waitUntil((async () => {
+    if (notificationId) {
+      await fetch(`/api/notifications/${encodeURIComponent(notificationId)}/read`, {
+        method: "POST",
+        cache: "no-store",
+        credentials: "include",
+      }).catch(() => undefined);
+      await pollNotifications({ force: true, suppressExisting: true }).catch(() => undefined);
+    }
     const windows = await self.clients.matchAll({ type: "window", includeUncontrolled: true });
     for (const client of windows) {
+      const clientUrl = new URL(client.url || self.location.origin);
+      if (clientUrl.origin !== self.location.origin) continue;
+      if ("navigate" in client) {
+        const navigated = await client.navigate(targetUrl.href).catch(() => null);
+        if (navigated && "focus" in navigated) {
+          const focused = await navigated.focus().catch(() => null);
+          if (focused) return focused;
+        }
+      }
       if ("focus" in client) {
-        await client.navigate(url).catch(() => undefined);
-        return client.focus();
+        const focused = await client.focus().catch(() => null);
+        if (focused) return focused;
       }
     }
-    return self.clients.openWindow(url);
+    if ("openWindow" in self.clients) return self.clients.openWindow(targetUrl.href);
+    return undefined;
   })());
 });
 
@@ -261,7 +326,7 @@ self.addEventListener("fetch", (event) => {
     return;
   }
 
-  if (STATIC_PATHS.includes(url.pathname) || url.pathname.startsWith("/assets/")) {
+  if (STATIC_PATHS.has(url.pathname) || url.pathname.startsWith("/assets/")) {
     event.respondWith((async () => {
       const cache = await caches.open(CACHE_NAME);
       const cached = await cache.match(request);

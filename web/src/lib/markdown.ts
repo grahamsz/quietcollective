@@ -6,13 +6,32 @@ type MarkdownList = {
 };
 
 export function stripMarkdownImages(value: unknown) {
-  return String(value || "").replace(/!\[[^\]]*]\([^)]*\)/g, "").replace(/\n{3,}/g, "\n\n").trim();
+  return String(value || "")
+    .replace(/!\[[^\]]*]\([^)]*\)/g, "")
+    .replace(/\[[^\]]+]\((?:https?:\/\/[^/\s)]+)?\/api\/media\/markdown-assets\/[^)\s]+\)/g, "")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
+}
+
+function markdownAssetVariantUrl(url: string, variant: "preview" | "thumbnail") {
+  const match = url.match(/^(?:https?:\/\/[^/\s)]+)?\/api\/media\/markdown-assets\/([^/\s)]+)(?:\/(?:original|preview|thumbnail))?$/);
+  return match ? `/api/media/markdown-assets/${match[1]}/${variant}` : null;
+}
+
+function renderMarkdownImage(alt: string, url: string) {
+  const thumbnailUrl = markdownAssetVariantUrl(url, "thumbnail") || url;
+  const fullUrl = markdownAssetVariantUrl(url, "preview") || url;
+  return `<a class="markdown-image-link" href="${fullUrl}" data-markdown-image-full="${fullUrl}" rel="noreferrer" target="_blank"><img class="markdown-image" src="${thumbnailUrl}" alt="${alt}" loading="lazy" decoding="async"></a>`;
 }
 
 export function renderMarkdownInline(value: unknown) {
   return escapeHtml(value || "")
-    .replace(/!\[([^\]]*)\]\((https?:\/\/[^)\s]+|\/[^)\s]+)\)/g, '<img class="markdown-image" src="$2" alt="$1">')
-    .replace(/\[([^\]]+)\]\((https?:\/\/[^)\s]+|\/[^)\s]+)\)/g, '<a href="$2" rel="noreferrer">$1</a>')
+    .replace(/!\[([^\]]*)\]\((https?:\/\/[^)\s]+|\/[^)\s]+)\)/g, (_match, alt, url) => renderMarkdownImage(alt, url))
+    .replace(/\[([^\]]+)\]\((https?:\/\/[^)\s]+|\/[^)\s]+)\)/g, (_match, label, url) => (
+      markdownAssetVariantUrl(url, "thumbnail")
+        ? renderMarkdownImage(label, url)
+        : `<a href="${url}" rel="noreferrer">${label}</a>`
+    ))
     .replace(/`([^`]+)`/g, "<code>$1</code>")
     .replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>")
     .replace(/\*([^*]+)\*/g, "<em>$1</em>")

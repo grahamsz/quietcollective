@@ -4,7 +4,8 @@ import { readFileSync } from "node:fs";
 const workerEntry = readFileSync("worker/src/index.ts", "utf8");
 const workerRoutes = readFileSync("worker/src/routes.ts", "utf8");
 const workerConstants = readFileSync("worker/src/constants.ts", "utf8");
-const worker = `${workerEntry}\n${workerRoutes}\n${workerConstants}`;
+const webPushSource = readFileSync("worker/src/web-push.ts", "utf8");
+const worker = `${workerEntry}\n${workerRoutes}\n${workerConstants}\n${webPushSource}`;
 const activitySource = readFileSync("worker/src/activity.ts", "utf8");
 const apiCacheSource = readFileSync("worker/src/api-cache.ts", "utf8");
 const mediaSource = readFileSync("worker/src/media.ts", "utf8");
@@ -94,6 +95,17 @@ test("notifications use the joined activity context instead of the old N+1 forma
   assert.doesNotMatch(block, /activityEntry\(c\.env/);
 });
 
+test("linked work collaborators are notified when added or updated", () => {
+  const eventBlock = sourceBlock(workerEntry, "async function processEvent", 'if (event.type === "work.version_created")');
+  assert.match(eventBlock, /event\.type === "work\.collaborator_added"/);
+  assert.match(eventBlock, /event\.type === "work\.collaborator_updated"/);
+  assert.match(eventBlock, /targets\.add\(userId\)/);
+  assert.match(eventBlock, /You were added as a contributor/);
+
+  const collaboratorBlock = routeBlock("async function createWorkCollaborator", 'app.post("/api/galleries/:galleryId/works"');
+  assert.match(collaboratorBlock, /insertEvent\(c\.env, "work\.collaborator_added"[\s\S]*user_id: linkedUserId/);
+});
+
 test("notification polling does not update member activity", () => {
   const block = sourceBlock(workerEntry, "function requestCountsAsActivity", "function currentUser");
   assert.match(block, /c\.req\.path !== "\/api\/notifications\/poll"/);
@@ -154,24 +166,72 @@ test("cacheable gallery and feed APIs use ETags before expensive reads", () => {
 
 test("browser notification polling is etagged and throttled", () => {
   const block = routeBlock('app.get("/api/notifications/poll"', 'app.post("/api/notifications/:id/read"');
-  assert.match(worker, /BROWSER_NOTIFICATION_ACTIVE_POLL_INTERVAL_MS = 5 \* 60 \* 1000/);
+  assert.match(worker, /BROWSER_NOTIFICATION_RECENT_POLL_INTERVAL_MS = 60 \* 1000/);
+  assert.match(worker, /BROWSER_NOTIFICATION_RECENT_WINDOW_MS = 30 \* 60 \* 1000/);
+  assert.match(worker, /BROWSER_NOTIFICATION_FOLLOWUP_POLL_INTERVAL_MS = 5 \* 60 \* 1000/);
+  assert.match(worker, /BROWSER_NOTIFICATION_FOLLOWUP_WINDOW_MS = 2 \* 60 \* 60 \* 1000/);
   assert.match(block, /MAX\(created_at\) AS latest_created_at/);
   assert.doesNotMatch(block, /sanitizeEtagPart\(since \|\| "all"\)/);
   assert.match(block, /etagMatches\(c\.req\.header\("if-none-match"\), etag\)/);
-  assert.ok(block.indexOf("apiNotModified(cache)") < block.indexOf("SELECT id, type, title, body, action_url, created_at"));
-  assert.match(block, /X-Active-Poll-Interval-Ms/);
+  assert.ok(block.indexOf("apiNotModified(cache)") < block.indexOf("WITH recent AS"));
+  assert.match(block, /ACTIVITY_CONTEXT_SELECT/);
+  assert.match(block, /activityEntryFromJoinedRow/);
+  assert.match(block, /action_url: row\.notification_action_url \|\| activity\?\.href \|\| "\/"/);
+  assert.match(block, /X-Recent-Poll-Interval-Ms/);
+  assert.match(block, /X-Followup-Poll-Interval-Ms/);
 
-  assert.match(appSource, /NOTIFICATION_ACTIVE_POLL_INTERVAL_MS = 5 \* 60 \* 1000/);
+  assert.match(appSource, /NOTIFICATION_RECENT_POLL_INTERVAL_MS = 60 \* 1000/);
+  assert.match(appSource, /NOTIFICATION_RECENT_WINDOW_MS = 30 \* 60 \* 1000/);
+  assert.match(appSource, /NOTIFICATION_FOLLOWUP_POLL_INTERVAL_MS = 5 \* 60 \* 1000/);
+  assert.match(appSource, /NOTIFICATION_FOLLOWUP_WINDOW_MS = 2 \* 60 \* 60 \* 1000/);
   assert.match(appSource, /periodicSync\.register\("qc-notifications"/);
+  assert.match(appSource, /browserPushSubscriptionActive\) return NOTIFICATION_IDLE_POLL_INTERVAL_MS/);
+  assert.match(appSource, /pushSubscribed \? NOTIFICATION_IDLE_POLL_INTERVAL_MS : NOTIFICATION_RECENT_POLL_INTERVAL_MS/);
+  assert.match(appSource, /NOTIFICATION_TITLE_PREFIX/);
+  assert.match(appSource, /document\.title = Number\(state\.unreadNotifications \|\| 0\) > 0/);
   assert.match(serviceWorker, /headers\.set\("if-none-match", state\.etag\)/);
-  assert.match(serviceWorker, /recentlyUsed \? activeInterval : idleInterval/);
+  assert.match(serviceWorker, /function notificationPollIntervalMs/);
+  assert.match(serviceWorker, /state\.pushSubscribed\) return idleInterval/);
+  assert.match(serviceWorker, /elapsed <= recentWindow/);
+  assert.match(serviceWorker, /elapsed <= recentWindow \+ followupWindow/);
   assert.match(serviceWorker, /notificationsChanged \? timestamp : state\.lastUsedAt/);
   assert.doesNotMatch(serviceWorker, /Number\(data\.unread_count \|\| 0\) > 0/);
 });
 
-test("gallery crossposting is limited to own or collaborator works and warns on visibility increases", () => {
+test("browser notifications register web push subscriptions and use VAPID directly", () => {
+  assert.match(workerRoutes, /app\.get\("\/api\/notifications\/push-public-key"/);
+  assert.match(workerRoutes, /app\.post\("\/api\/notifications\/push-subscriptions"/);
+  assert.match(workerRoutes, /app\.delete\("\/api\/notifications\/push-subscriptions"/);
+  assert.match(workerEntry, /sendBrowserPushNotifications\(env, userId\)/);
+  assert.match(workerEntry, /FROM push_subscriptions/);
+  assert.match(webPushSource, /crypto\.subtle\.importKey/);
+  assert.match(webPushSource, /crypto\.subtle\.sign/);
+  assert.match(webPushSource, /Authorization: `vapid t=\$\{jwt\}, k=\$\{vapidPublicKey\}`/);
+  assert.match(webPushSource, /Urgency: "high"/);
+  assert.doesNotMatch(webPushSource, /from "web-push"/);
+  assert.match(wrangler, /"max_batch_timeout": 2/);
+  assert.match(appSource, /pushManager\.subscribe/);
+  assert.match(appSource, /\/api\/notifications\/push-subscriptions/);
+  assert.match(serviceWorker, /addEventListener\("push"/);
+  assert.match(serviceWorker, /pollNotifications\(\{ force: true \}\)/);
+  assert.match(serviceWorker, /addEventListener\("notificationclick"/);
+  assert.match(serviceWorker, /data: \{ notificationId: item\.id, url: item\.action_url \|\| "\/" \}/);
+  assert.match(serviceWorker, /\/api\/notifications\/\$\{encodeURIComponent\(notificationId\)\}\/read/);
+  assert.match(serviceWorker, /pollNotifications\(\{ force: true, suppressExisting: true \}\)/);
+  assert.match(serviceWorker, /client\.navigate\(targetUrl\.href\)\.catch\(\(\) => null\)/);
+  assert.match(serviceWorker, /self\.clients\.openWindow\(targetUrl\.href\)/);
+});
+
+test("gallery posting is limited to eligible target galleries", () => {
+  const createWork = routeBlock('app.post("/api/galleries/:galleryId/works"', 'app.get("/api/works/:id"');
+  assert.match(createWork, /assertGalleryCapability\(c, galleryId, "upload_work"\)/);
+
+  const galleryCaps = sourceBlock(workerEntry, "async function galleryCapabilities", "async function getWork");
+  assert.match(galleryCaps, /resolveGalleryCapabilities\(\{ baseCaps, gallery, member \}\)/);
+  assert.doesNotMatch(galleryCaps, /user\.role === "admin"\) return OWNER_CAPABILITIES/);
+
   const candidates = routeBlock('app.get("/api/galleries/:id/crosspost-candidates"', 'app.patch("/api/galleries/:id"');
-  assert.match(candidates, /assertGalleryCapability\(c, galleryId, "upload_work"\)/);
+  assert.match(candidates, /assertGalleryCrosspostTarget\(c, galleryId\)/);
   assert.match(candidates, /works\.created_by = \?/);
   assert.match(candidates, /work_collaborators\.user_id = \?/);
   assert.match(candidates, /NOT EXISTS \(\s*SELECT 1 FROM work_galleries/);
@@ -180,12 +240,28 @@ test("gallery crossposting is limited to own or collaborator works and warns on 
   const crosspost = routeBlock('app.post("/api/works/:id/galleries"', 'app.delete("/api/works/:id/galleries/:galleryId"');
   assert.match(crosspost, /assertWorkCrosspostCapability\(c, c\.req\.param\("id"\)\)/);
   assert.doesNotMatch(crosspost, /assertWorkCapability\(c, c\.req\.param\("id"\), "edit"\)/);
-  assert.match(crosspost, /assertGalleryCapability\(c, galleryId, "upload_work"\)/);
+  assert.match(crosspost, /assertGalleryCrosspostTarget\(c, galleryId\)/);
   assert.match(crosspost, /insertEvent\(c\.env, "work\.crossposted"/);
+
+  const targetGate = sourceBlock(workerEntry, "async function assertGalleryCrosspostTarget", "async function assertWorkCapability");
+  assert.match(targetGate, /canCrosspostToGallery\(\{ caps, gallery, user \}\)/);
+  assert.doesNotMatch(targetGate, /user\.role === "admin"/);
 
   const activity = sourceBlock(activitySource, "export async function activityEntryFromJoinedRow", undefined);
   assert.match(activity, /row\.type === "work\.crossposted"/);
   assert.match(activity, /crossposted "\$\{workTitle\}" to "\$\{row\.target_gallery_title \|\| "another gallery"\}"/);
+});
+
+test("global feedback request changes are owner-only and dismissals are per-user", () => {
+  const feedback = routeBlock('app.post("/api/works/:id/feedback-requested"', 'app.post("/api/works/:id/feedback-requested/dismiss"');
+  assert.match(feedback, /assertWorkCapability\(c, c\.req\.param\("id"\), "view"\)/);
+  assert.match(feedback, /gate\.work!\.created_by !== user\.id/);
+  assert.match(feedback, /DELETE FROM feedback_request_dismissals WHERE work_id = \?/);
+
+  const dismiss = routeBlock('app.post("/api/works/:id/feedback-requested/dismiss"', 'app.delete("/api/works/:id/feedback-requested/dismiss"');
+  assert.match(dismiss, /assertWorkCapability\(c, c\.req\.param\("id"\), "view"\)/);
+  assert.match(dismiss, /INSERT INTO feedback_request_dismissals/);
+  assert.doesNotMatch(dismiss, /UPDATE works/);
 });
 
 test("exports produce a zip archive with JSON, works CSV, and high-res WebP files", () => {
@@ -221,7 +297,8 @@ test("service worker does not cache API responses or original media", () => {
 test("wrangler config keeps R2 private by serving assets through the Worker API only", () => {
   const config = JSON.parse(wrangler.replace(/\/\/.*$/gm, ""));
   assert.equal(config.r2_buckets[0].bucket_name, "quietcollective-media");
-  assert.deepEqual(config.assets.run_worker_first, ["/api/*"]);
+  assert.ok(config.assets.run_worker_first.includes("/api/*"));
+  assert.ok(config.assets.run_worker_first.includes("/manifest.webmanifest"));
 });
 
 let passed = 0;

@@ -6,10 +6,11 @@ import {
 } from "./api-cache";
 import type { AppContext, Ctx } from "./app-context";
 import { signedMediaUrl } from "./media";
-import { resolveWorkCapabilities } from "./permissions";
+import { canCrosspostToGallery, ownsGallery, resolveGalleryCapabilities, resolveWorkCapabilities, type GalleryMemberPermissions } from "./permissions";
 import { registerRoutes } from "./routes";
 import { parseCookies, readSessionUserId } from "./sessions";
 import type { AppUser, Env, GalleryCapabilities, GalleryRow, WorkRow, WorkVersionRow } from "./types";
+import { sendWebPushTickle, webPushConfigured } from "./web-push";
 import {
   extractMentions,
   jsonText,
@@ -106,12 +107,19 @@ function currentUser(c: Ctx) {
   return c.get("user");
 }
 
+function passwordChangeRequired(user: AppUser) {
+  if (!user.force_password_change_at) return false;
+  if (!user.password_changed_at) return true;
+  return Date.parse(user.password_changed_at) < Date.parse(user.force_password_change_at);
+}
+
 function publicUser(user: AppUser, tags: string[] = []) {
   return {
     id: user.id,
     email: user.email,
     role: user.role,
     disabled_at: user.disabled_at,
+    password_change_required: passwordChangeRequired(user),
     display_name: user.handle,
     handle: user.handle,
     bio: user.bio,
@@ -153,13 +161,32 @@ async function setSetting(db: D1Database, key: string, value: unknown, actorId: 
 
 async function instanceInfo(env: Env) {
   const name = await getSetting(env.DB, "instance_name", env.INSTANCE_NAME || "QuietCollective");
+  const appName = await getSetting(env.DB, "app_name", name);
+  const appShortName = await getSetting(env.DB, "app_short_name", "QC");
+  const appThemeColor = await getSetting(env.DB, "app_theme_color", "#050505");
+  const appBackgroundColor = await getSetting(env.DB, "app_background_color", "#050505");
   const sourceCodeUrl = await getSetting(env.DB, "source_code_url", env.SOURCE_CODE_URL || "");
   const logoKey = await getSetting<string | null>(env.DB, "logo_r2_key", null);
+  const appIconKey = await getSetting<string | null>(env.DB, "app_icon_r2_key", null);
+  const maskableIconKey = await getSetting<string | null>(env.DB, "app_maskable_icon_r2_key", null);
+  const contentNotice = await getSetting(env.DB, "content_notice", "Uploaded user content remains owned by the uploader or rights holder.");
+  const homepageSubtitle = await getSetting(env.DB, "homepage_subtitle", "Private image galleries, critique, collaborator credits, and member profiles for logged-in members.");
+  const loginSubtitle = await getSetting(env.DB, "login_subtitle", "");
+  const inviteSubtitle = await getSetting(env.DB, "invite_subtitle", "");
   return {
     name,
+    app_name: appName,
+    app_short_name: appShortName,
+    app_theme_color: appThemeColor,
+    app_background_color: appBackgroundColor,
     source_code_url: sourceCodeUrl,
     logo_url: logoKey ? "/api/instance/logo" : "",
-    content_notice: "Uploaded user content remains owned by the uploader or rights holder.",
+    app_icon_url: appIconKey ? "/api/instance/app-icon/any" : "",
+    app_maskable_icon_url: maskableIconKey ? "/api/instance/app-icon/maskable" : "",
+    content_notice: contentNotice,
+    homepage_subtitle: homepageSubtitle,
+    login_subtitle: loginSubtitle,
+    invite_subtitle: inviteSubtitle,
   };
 }
 
@@ -174,33 +201,23 @@ async function isAdmin(db: D1Database, userId: string) {
 }
 
 async function galleryCapabilities(db: D1Database, user: AppUser, galleryId: string): Promise<GalleryCapabilities> {
-  if (user.role === "admin") return OWNER_CAPABILITIES;
   const gallery = await db.prepare("SELECT * FROM galleries WHERE id = ?").bind(galleryId).first<GalleryRow>();
   if (!gallery) return EMPTY_CAPABILITIES;
-  if (gallery.owner_user_id === user.id || gallery.created_by === user.id) return OWNER_CAPABILITIES;
+  if (ownsGallery(user, gallery)) return OWNER_CAPABILITIES;
+  const admin = user.role === "admin";
   const wholeServerUpload = !!gallery.whole_server_upload || gallery.ownership_type === "whole_server";
   const baseCaps = wholeServerUpload
     ? { ...EMPTY_CAPABILITIES, view: true, upload_work: true, comment: true }
-    : gallery.visibility === "server_public"
+    : admin || gallery.visibility === "server_public"
       ? { ...EMPTY_CAPABILITIES, view: true, comment: true }
       : { ...EMPTY_CAPABILITIES };
 
   const member = await db.prepare(
     `SELECT can_view, can_edit, can_upload_work, can_comment, can_manage_collaborators
      FROM gallery_members WHERE gallery_id = ? AND user_id = ?`,
-  ).bind(galleryId, user.id).first<Record<string, number>>();
+  ).bind(galleryId, user.id).first<NonNullable<GalleryMemberPermissions>>();
 
-  if (member) {
-    return {
-      view: baseCaps.view || !!member.can_view,
-      edit: baseCaps.edit || !!member.can_edit,
-      upload_work: baseCaps.upload_work || !!member.can_upload_work,
-      comment: baseCaps.comment || !!member.can_comment,
-      manage_collaborators: baseCaps.manage_collaborators || !!member.can_manage_collaborators,
-    };
-  }
-
-  return baseCaps;
+  return resolveGalleryCapabilities({ baseCaps, gallery, member });
 }
 
 async function getWork(db: D1Database, id: string) {
@@ -280,6 +297,15 @@ async function assertGalleryCapability(
     return { ok: false as const, response: c.json({ error: "Forbidden" }, 403) };
   }
   return { ok: true as const, caps };
+}
+
+async function assertGalleryCrosspostTarget(c: Ctx, galleryId: string) {
+  const user = currentUser(c);
+  const gallery = await c.env.DB.prepare("SELECT * FROM galleries WHERE id = ?").bind(galleryId).first<GalleryRow>();
+  if (!gallery) return { ok: false as const, response: c.json({ error: "Not found" }, 404) };
+  const caps = await galleryCapabilities(c.env.DB, user, galleryId);
+  if (!canCrosspostToGallery({ caps, gallery, user })) return { ok: false as const, response: c.json({ error: "Forbidden" }, 403) };
+  return { ok: true as const, gallery, caps };
 }
 
 async function assertWorkCapability(
@@ -366,6 +392,56 @@ async function notify(env: Env, eventId: string, userId: string, type: string, b
     "INSERT INTO notifications (id, user_id, event_id, type, body, created_at) VALUES (?, ?, ?, ?, ?, ?)",
   ).bind(ulid(), userId, eventId, type, body, now()).run();
   await bumpApiCacheToken(env.DB).catch(() => undefined);
+  await sendBrowserPushNotifications(env, userId).catch((error: unknown) => console.error("web push notification failed", error));
+}
+
+async function sendBrowserPushNotifications(env: Env, userId: string) {
+  if (!webPushConfigured(env)) return;
+  const rows = await env.DB.prepare(
+    `SELECT id, endpoint, p256dh, auth
+     FROM push_subscriptions
+     WHERE user_id = ?
+       AND disabled_at IS NULL
+     ORDER BY updated_at DESC
+     LIMIT 20`,
+  ).bind(userId).all<{ id: string; endpoint: string; p256dh: string; auth: string }>();
+  for (const row of rows.results) {
+    const timestamp = now();
+    try {
+      const result = await sendWebPushTickle(env, row);
+      if (result.ok) {
+        await env.DB.prepare(
+          `UPDATE push_subscriptions
+           SET last_success_at = ?,
+               last_error_at = NULL,
+               error_count = 0,
+               updated_at = ?
+           WHERE id = ?`,
+        ).bind(timestamp, timestamp, row.id).run();
+        continue;
+      }
+      await recordPushFailure(env.DB, row.id, result.gone);
+    } catch (error: unknown) {
+      console.error("web push send failed", error);
+      await recordPushFailure(env.DB, row.id, false);
+    }
+  }
+}
+
+async function recordPushFailure(db: D1Database, subscriptionId: string, gone = false) {
+  const timestamp = now();
+  await db.prepare(
+    `UPDATE push_subscriptions
+     SET last_error_at = ?,
+         error_count = error_count + 1,
+         disabled_at = CASE
+           WHEN ? = 1 THEN COALESCE(disabled_at, ?)
+           WHEN error_count >= 4 THEN COALESCE(disabled_at, ?)
+           ELSE disabled_at
+         END,
+         updated_at = ?
+     WHERE id = ?`,
+  ).bind(timestamp, gone ? 1 : 0, timestamp, timestamp, timestamp, subscriptionId).run();
 }
 
 async function linkedWorkCollaborators(db: D1Database, workId: string) {
@@ -437,7 +513,7 @@ async function processEvent(env: Env, eventId: string) {
   if (event.type === "work.collaborator_added" || event.type === "work.collaborator_updated") {
     const userId = typeof payload.user_id === "string" ? payload.user_id : null;
     if (userId) targets.add(userId);
-    body = event.type === "work.collaborator_added" ? "You were added as a work collaborator" : "Your work collaborator credit was updated";
+    body = event.type === "work.collaborator_added" ? "You were added as a contributor" : "Your contributor credit was updated";
   }
 
   if (event.type === "work.version_created") {
@@ -629,6 +705,7 @@ async function serializeWork(env: Env, user: AppUser, work: WorkRow) {
     feedback_requested: feedbackRequested,
     feedback_dismissed: feedbackRequested && !!feedbackDismissal,
     feedback_dismissed_at: feedbackDismissal?.dismissed_at || null,
+    is_owner: work.created_by === user.id,
     reactions: reaction,
     capabilities: caps.caps,
     can_create_version: caps.version,
@@ -712,6 +789,7 @@ async function serializeGalleryWorkListItem(env: Env, user: AppUser, row: Galler
     feedback_requested: feedbackRequestActive(row),
     feedback_dismissed: feedbackRequestActive(row) && !!row.feedback_dismissed_at,
     feedback_dismissed_at: row.feedback_dismissed_at,
+    is_owner: row.created_by === user.id,
     reactions: {
       heart_count: row.heart_count || 0,
       hearted_by_me: !!row.hearted_by_me,
@@ -751,6 +829,7 @@ registerRoutes(app, {
   galleryVisibilityRank,
   workVisibilityRank,
   assertGalleryCapability,
+  assertGalleryCrosspostTarget,
   assertWorkCapability,
   assertWorkCrosspostCapability,
   canViewTarget,

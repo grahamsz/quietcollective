@@ -4,13 +4,17 @@ import { renderAdmin, renderAdminInvites } from "./pages/admin";
 import { renderExports, renderMyProfile } from "./pages/account";
 import { renderGallery, renderGallerySettings, renderNewGallery } from "./pages/galleries";
 import { renderGalleries, renderHome, renderMemberProfile, renderMembers, renderTagPage } from "./pages/home";
-import { renderInvite, renderLogin, renderSetup } from "./pages/auth";
+import { renderForcePasswordChange, renderForgotPassword, renderInvite, renderLogin, renderResetPassword, renderRulesAccept, renderSetup } from "./pages/auth";
 import { renderNotFound } from "./pages/not-found";
 import { renderWork, renderWorkEdit, renderWorkVersions } from "./pages/works";
 
 const routes = [
   ["/setup", renderSetup],
   ["/login", renderLogin],
+  ["/forgot-password", renderForgotPassword],
+  [/^\/reset-password\/([^/]+)$/, renderResetPassword],
+  ["/force-password-change", renderForcePasswordChange],
+  ["/rules/accept", renderRulesAccept],
   [/^\/invite\/([^/]+)$/, renderInvite],
   ["/", renderHome],
   ["/galleries", renderGalleries],
@@ -60,7 +64,9 @@ setRouteRenderer(renderCurrentRoute);
 window.addEventListener("popstate", renderCurrentRoute);
 
 if ("serviceWorker" in navigator) {
-  navigator.serviceWorker.register("/sw.js").catch(() => undefined);
+  const buildVersion = document.querySelector('meta[name="qc-build"]')?.getAttribute("content") || "";
+  const serviceWorkerUrl = buildVersion && buildVersion !== "dev" ? `/sw.js?v=${encodeURIComponent(buildVersion)}` : "/sw.js";
+  navigator.serviceWorker.register(serviceWorkerUrl, { scope: "/" }).then((registration) => registration.update().catch(() => undefined)).catch(() => undefined);
   navigator.serviceWorker.addEventListener("message", (event) => {
     if (event.data?.type !== "qc-notifications-status") return;
     state.unreadNotifications = Number(event.data.unreadCount || 0);

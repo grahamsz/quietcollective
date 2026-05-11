@@ -3,6 +3,7 @@ import {
   api,
   bindJsonForm,
   bindProtectedMedia,
+  canCrosspostToGallery,
   clientKey,
   empty,
   encodePath,
@@ -90,7 +91,8 @@ function bindCreateWork(galleryId, gallery) {
 function openGalleryAddMenu(galleryId, gallery) {
   const modal = document.createElement("div");
   modal.className = "modal-backdrop";
-  modal.innerHTML = addToGalleryModalView(gallery);
+  const canCrosspost = canCrosspostToGallery(gallery);
+  modal.innerHTML = addToGalleryModalView(gallery, canCrosspost);
   const close = () => modal.remove();
   document.body.append(modal);
   mountComponentIslands(modal);
@@ -113,6 +115,7 @@ function openGalleryAddMenu(galleryId, gallery) {
 }
 
 async function openCrosspostModal(galleryId, gallery) {
+  if (!canCrosspostToGallery(gallery)) return toast("You can only crosspost to Everyone galleries or galleries you own.", "error");
   const modal = document.createElement("div");
   modal.className = "modal-backdrop";
   modal.innerHTML = crosspostModalShellView(gallery);
