@@ -106,6 +106,17 @@ components:
           type: string
         cover_image_url:
           type: [string, "null"]
+        ownership_summary:
+          type: object
+          properties:
+            owner_handle:
+              type: [string, "null"]
+            owner_display_name:
+              type: [string, "null"]
+            viewer_count:
+              type: integer
+            additional_viewer_count:
+              type: integer
         capabilities:
           $ref: "#/components/schemas/Capabilities"
         created_at:

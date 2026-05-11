@@ -670,9 +670,22 @@ async function processEvent(env: Env, eventId: string) {
 }
 
 async function serializeGallery(env: Env, user: AppUser, gallery: GalleryRow) {
-  const pinned = await env.DB.prepare("SELECT pinned_at FROM user_gallery_pins WHERE user_id = ? AND gallery_id = ?")
-    .bind(user.id, gallery.id)
-    .first<{ pinned_at: string }>();
+  const [pinned, ownership] = await Promise.all([
+    env.DB.prepare("SELECT pinned_at FROM user_gallery_pins WHERE user_id = ? AND gallery_id = ?")
+      .bind(user.id, gallery.id)
+      .first<{ pinned_at: string }>(),
+    env.DB.prepare(
+      `SELECT owner.handle AS owner_handle,
+              owner.display_name AS owner_display_name,
+              COUNT(DISTINCT CASE WHEN gallery_members.can_view = 1 THEN gallery_members.user_id END) AS viewer_count
+       FROM galleries
+       JOIN users AS owner ON owner.id = galleries.owner_user_id
+       LEFT JOIN gallery_members ON gallery_members.gallery_id = galleries.id
+       WHERE galleries.id = ?
+       GROUP BY owner.id`,
+    ).bind(gallery.id).first<{ owner_handle: string; owner_display_name: string; viewer_count: number }>(),
+  ]);
+  const viewerCount = Math.max(1, Number(ownership?.viewer_count || 0));
   let coverVersion = gallery.cover_version_id
     ? await env.DB.prepare(
       `SELECT work_versions.*
@@ -699,6 +712,12 @@ async function serializeGallery(env: Env, user: AppUser, gallery: GalleryRow) {
     capabilities: await galleryCapabilities(env.DB, user, gallery.id),
     pinned: !!pinned,
     pinned_at: pinned?.pinned_at || null,
+    ownership_summary: {
+      owner_handle: ownership?.owner_handle || null,
+      owner_display_name: ownership?.owner_display_name || null,
+      viewer_count: viewerCount,
+      additional_viewer_count: Math.max(0, viewerCount - 1),
+    },
     cover_image_url: coverVersion?.thumbnail_r2_key
       ? (await signedMediaUrl(env, coverVersion.thumbnail_r2_key, coverVersion.thumbnail_content_type, "thumbnail")) || `/api/media/works/${coverVersion.work_id}/versions/${coverVersion.id}/thumbnail`
       : gallery.cover_image_key ? `/api/media/galleries/${gallery.id}/cover` : null,

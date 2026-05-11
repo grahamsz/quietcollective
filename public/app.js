@@ -617,16 +617,44 @@ function galleryMosaic(galleries) {
   return `<div class="gallery-mosaic">${(galleries || []).sort(newestFirst).map((gallery, index) => `
     <a class="gallery-tile media-reveal ${gallery.cover_image_url ? "" : "is-empty"}" href="/galleries/${gallery.id}" data-link data-media-reveal ${tileRevealStyle(index)}>
       ${gallery.cover_image_url ? protectedImage(gallery.cover_image_url, gallery.title) : `<span>${escapeHtml(initials(gallery.title))}</span>`}
+      ${galleryScopeChip(gallery)}
       <div class="tile-overlay"><strong>${escapeHtml(gallery.title)}</strong><small>${gallery.visibility === "server_public" ? "Whole Server" : "Private"}</small></div>
     </a>
   `).join("")}</div>`;
+}
+
+function galleryAudience(gallery) {
+  if (gallery.ownership_type === "whole_server" || gallery.visibility === "server_public") {
+    return { label: "Whole Server", title: "Gallery audience: Whole Server" };
+  }
+  const summary = gallery.ownership_summary || {};
+  const owner = summary.owner_handle ? `@${summary.owner_handle}` : "Owner";
+  const extra = Number(summary.additional_viewer_count || 0);
+  return {
+    label: extra > 0 ? `${owner} +${extra}` : owner,
+    title: extra > 0
+      ? `Gallery owner: ${owner}. ${extra} more member${extra === 1 ? "" : "s"} can view.`
+      : `Gallery owner: ${owner}`,
+  };
+}
+
+function galleryScopeChip(gallery) {
+  const audience = galleryAudience(gallery);
+  return `<span class="gallery-scope-chip" title="${escapeHtml(audience.title)}" aria-label="${escapeHtml(audience.title)}"><span class="tile-icon tile-icon-gallery" aria-hidden="true"></span><span>${escapeHtml(audience.label)}</span></span>`;
+}
+
+function feedbackRequestedIndicator(work) {
+  if (!work.feedback_requested || work.feedback_dismissed) return "";
+  const prompt = String(work.feedback_prompt || "").trim().replace(/\s+/g, " ");
+  const title = prompt ? `Feedback requested: ${prompt}` : "Feedback requested: this work is asking for critique.";
+  return `<span class="tile-status"><span class="feedback-indicator" title="${escapeHtml(title)}" aria-label="${escapeHtml(title)}">?</span></span>`;
 }
 
 function imageTile(work, index = 0) {
   const version = work.current_version || {};
   const imageUrl = version.thumbnail_url || version.preview_url;
   const hearts = work.reactions?.heart_count || 0;
-  return `<a href="/works/${work.id}" class="image-tile media-reveal" data-link data-media-reveal ${tileRevealStyle(index)}>${imageUrl ? protectedImage(imageUrl, work.title) : `<span class="image-placeholder">${escapeHtml(initials(work.title))}</span>`}<div class="tile-overlay"><strong>${escapeHtml(work.title)}</strong><small>${hearts ? `${hearts} heart${hearts === 1 ? "" : "s"}` : "Image"}</small></div></a>`;
+  return `<a href="/works/${work.id}" class="image-tile media-reveal" data-link data-media-reveal ${tileRevealStyle(index)}>${imageUrl ? protectedImage(imageUrl, work.title) : `<span class="image-placeholder">${escapeHtml(initials(work.title))}</span>`}${feedbackRequestedIndicator(work)}<div class="tile-overlay"><strong>${escapeHtml(work.title)}</strong><small>${hearts ? `${hearts} heart${hearts === 1 ? "" : "s"}` : "Image"}</small></div></a>`;
 }
 
 function imageGrid(works) {
