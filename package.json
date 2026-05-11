@@ -9,6 +9,7 @@
     "web:typecheck": "node scripts/check-public.mjs",
     "worker:typecheck": "tsc -p worker/tsconfig.json --noEmit",
     "verify": "npm run web:build && npm run worker:typecheck",
+    "media:backfill:webp": "node scripts/backfill-webp-media.mjs",
     "dev": "wrangler dev",
     "deploy": "npm run verify && npm run d1:migrations:apply:remote && wrangler deploy",
     "types": "wrangler types",

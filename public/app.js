@@ -65,6 +65,36 @@ function clientKey(prefix = "qc") {
   return `${prefix}:${Date.now().toString(36)}:${Math.random().toString(36).slice(2)}`;
 }
 
+async function resizeImageForUpload(file, maxDimension, label, quality = 0.86) {
+  if (!file.type.startsWith("image/")) return file;
+  const bitmap = await createImageBitmap(file).catch(() => null);
+  if (!bitmap) return file;
+  const scale = Math.min(1, maxDimension / Math.max(bitmap.width, bitmap.height));
+  const width = Math.max(1, Math.round(bitmap.width * scale));
+  const height = Math.max(1, Math.round(bitmap.height * scale));
+  if (scale === 1 && file.type === "image/webp") {
+    bitmap.close?.();
+    return file;
+  }
+  const canvas = document.createElement("canvas");
+  canvas.width = width;
+  canvas.height = height;
+  canvas.getContext("2d").drawImage(bitmap, 0, 0, width, height);
+  bitmap.close?.();
+  const blob = await new Promise((resolve) => canvas.toBlob(resolve, "image/webp", quality));
+  if (!blob) return file;
+  const base = (file.name || "image").replace(/\.[^.]+$/, "");
+  return new File([blob], `${base}-${label}.webp`, { type: "image/webp", lastModified: Date.now() });
+}
+
+async function imageUploadVariants(file) {
+  const [preview, thumbnail] = await Promise.all([
+    resizeImageForUpload(file, 2048, "preview", 0.88),
+    resizeImageForUpload(file, 512, "thumb", 0.82),
+  ]);
+  return { preview, thumbnail };
+}
+
 function initials(name) {
   const bits = String(name || "QC").trim().split(/\s+/).slice(0, 2);
   return bits.map((bit) => bit[0]?.toUpperCase() || "").join("") || "QC";
@@ -891,8 +921,12 @@ async function openWorkUploadModal(galleryId, file) {
     form.dataset.submitting = "true";
     submit?.setAttribute("disabled", "disabled");
     const previousLabel = submit?.textContent || "";
-    if (submit) submit.textContent = "Uploading...";
+    if (submit) submit.textContent = "Preparing...";
     try {
+      const { preview, thumbnail } = await imageUploadVariants(file);
+      body.set("preview", preview);
+      body.set("thumbnail", thumbnail);
+      if (submit) submit.textContent = "Uploading...";
       const data = await api(`/api/galleries/${encodePath(galleryId)}/works`, { method: "POST", body });
       await loadRoleSuggestions();
       const failed = (data.collaborator_results || []).filter((result) => !result.ok);
@@ -1038,16 +1072,29 @@ function bindVersionForm(id) {
   const form = document.querySelector("#version-form");
   const input = form?.querySelector("[name=file]");
   const label = form?.querySelector("[data-file-name]");
+  const submit = form?.querySelector("[type=submit]");
   input?.addEventListener("change", () => {
     label.textContent = input.files?.[0]?.name || "No image selected";
   });
   form?.addEventListener("submit", async (event) => {
     event.preventDefault();
+    const file = input?.files?.[0];
+    if (!file) return toast("Choose an image", "error");
+    const previousLabel = submit?.textContent || "";
+    submit?.setAttribute("disabled", "disabled");
     try {
-      await api(`/api/works/${encodePath(id)}/versions`, { method: "POST", body: new FormData(form) });
+      if (submit) submit.textContent = "Preparing...";
+      const body = new FormData(form);
+      const { preview, thumbnail } = await imageUploadVariants(file);
+      body.set("preview", preview);
+      body.set("thumbnail", thumbnail);
+      if (submit) submit.textContent = "Creating...";
+      await api(`/api/works/${encodePath(id)}/versions`, { method: "POST", body });
       navigate(`/works/${id}/versions`);
     } catch (error) {
       toast(error.message, "error");
+      submit?.removeAttribute("disabled");
+      if (submit) submit.textContent = previousLabel;
     }
   });
 }

@@ -75,6 +75,16 @@ These instructions use the production resource names already referenced by `wran
 - Comments are allowed only when the user can view the target.
 - `feedback_requested` is a UI signal only; it never broadens access.
 
+## Media Backfill
+
+New image uploads create WebP preview and thumbnail variants for grid and feed views while keeping originals private in R2. To convert existing preview/thumbnail media to WebP after upgrading an instance, run:
+
+```bash
+npm run media:backfill:webp -- --remote
+```
+
+Use `--dry-run` first to see which image versions will be touched. If you deploy with a non-default Wrangler config, pass `--config <path>`.
+
 ## Useful Commands
 
 ```bash
@@ -82,6 +92,7 @@ npm run web:dev
 npm run web:build
 npm run worker:typecheck
 npm run verify
+npm run media:backfill:webp -- --dry-run
 npm run d1:migrations:apply
 npm run d1:migrations:apply:remote
 ```

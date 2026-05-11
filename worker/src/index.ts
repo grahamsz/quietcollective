@@ -116,7 +116,7 @@ function truthy(value: unknown) {
 function cacheControl(variant: string) {
   return variant === "original"
     ? "private, no-store"
-    : "private, max-age=300";
+    : "private, max-age=3600";
 }
 
 function getSecret(env: Env) {
@@ -128,6 +128,14 @@ function base64Url(bytes: ArrayBuffer | Uint8Array) {
   let binary = "";
   for (const byte of data) binary += String.fromCharCode(byte);
   return btoa(binary).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/g, "");
+}
+
+function base64UrlToString(value: string) {
+  const padded = value.replace(/-/g, "+").replace(/_/g, "/").padEnd(Math.ceil(value.length / 4) * 4, "=");
+  const binary = atob(padded);
+  const bytes = new Uint8Array(binary.length);
+  for (let i = 0; i < binary.length; i += 1) bytes[i] = binary.charCodeAt(i);
+  return new TextDecoder().decode(bytes);
 }
 
 async function sha256(value: string) {
@@ -143,6 +151,42 @@ async function sign(value: string, secret: string) {
     ["sign"],
   );
   return base64Url(await crypto.subtle.sign("HMAC", key, new TextEncoder().encode(value)));
+}
+
+type SignedMediaPayload = {
+  key: string;
+  content_type?: string | null;
+  variant: string;
+  filename?: string | null;
+  exp: number;
+};
+
+async function signedMediaUrl(env: Env, key: string | null | undefined, contentType: string | null | undefined, variant: string, filename?: string | null) {
+  if (!key) return null;
+  const secret = getSecret(env);
+  if (!secret) return null;
+  const hourBucket = Math.floor(Date.now() / (60 * 60 * 1000));
+  const ttlHours = variant === "original" ? 2 : 8;
+  const payload: SignedMediaPayload = {
+    key,
+    content_type: contentType || null,
+    variant,
+    filename: filename || null,
+    exp: (hourBucket + ttlHours) * 60 * 60,
+  };
+  const data = base64Url(new TextEncoder().encode(JSON.stringify(payload)));
+  return `/api/media/signed/${data}.${await sign(data, secret)}`;
+}
+
+async function readSignedMediaPayload(env: Env, token: string): Promise<SignedMediaPayload | null> {
+  const secret = getSecret(env);
+  if (!secret) return null;
+  const [data, signature] = token.split(".");
+  if (!data || !signature) return null;
+  if (await sign(data, secret) !== signature) return null;
+  const payload = parseJson<SignedMediaPayload>(base64UrlToString(data), { key: "", variant: "", exp: 0 });
+  if (!payload.key || !payload.variant || !payload.exp || payload.exp < Math.floor(Date.now() / 1000)) return null;
+  return payload;
 }
 
 async function createSession(userId: string, env: Env) {
@@ -625,12 +669,12 @@ async function processEvent(env: Env, eventId: string) {
   await env.DB.prepare("UPDATE domain_events SET processed_at = ? WHERE id = ?").bind(now(), event.id).run();
 }
 
-async function serializeGallery(db: D1Database, user: AppUser, gallery: GalleryRow) {
-  const pinned = await db.prepare("SELECT pinned_at FROM user_gallery_pins WHERE user_id = ? AND gallery_id = ?")
+async function serializeGallery(env: Env, user: AppUser, gallery: GalleryRow) {
+  const pinned = await env.DB.prepare("SELECT pinned_at FROM user_gallery_pins WHERE user_id = ? AND gallery_id = ?")
     .bind(user.id, gallery.id)
     .first<{ pinned_at: string }>();
   let coverVersion = gallery.cover_version_id
-    ? await db.prepare(
+    ? await env.DB.prepare(
       `SELECT work_versions.*
        FROM work_versions
        JOIN works ON works.id = work_versions.work_id
@@ -639,7 +683,7 @@ async function serializeGallery(db: D1Database, user: AppUser, gallery: GalleryR
     ).bind(gallery.cover_version_id, gallery.id).first<WorkVersionRow>()
     : null;
   if (!coverVersion && !gallery.cover_image_key) {
-    coverVersion = await db.prepare(
+    coverVersion = await env.DB.prepare(
       `SELECT work_versions.*
        FROM works
        JOIN work_galleries ON work_galleries.work_id = works.id
@@ -652,11 +696,11 @@ async function serializeGallery(db: D1Database, user: AppUser, gallery: GalleryR
   return {
     ...gallery,
     ownership_type: gallery.whole_server_upload ? "whole_server" : gallery.ownership_type,
-    capabilities: await galleryCapabilities(db, user, gallery.id),
+    capabilities: await galleryCapabilities(env.DB, user, gallery.id),
     pinned: !!pinned,
     pinned_at: pinned?.pinned_at || null,
     cover_image_url: coverVersion?.thumbnail_r2_key
-      ? `/api/media/works/${coverVersion.work_id}/versions/${coverVersion.id}/thumbnail`
+      ? (await signedMediaUrl(env, coverVersion.thumbnail_r2_key, coverVersion.thumbnail_content_type, "thumbnail")) || `/api/media/works/${coverVersion.work_id}/versions/${coverVersion.id}/thumbnail`
       : gallery.cover_image_key ? `/api/media/galleries/${gallery.id}/cover` : null,
   };
 }
@@ -674,19 +718,19 @@ async function reactionSummary(db: D1Database, user: AppUser, targetType: "work"
   };
 }
 
-async function serializeWork(db: D1Database, user: AppUser, work: WorkRow) {
+async function serializeWork(env: Env, user: AppUser, work: WorkRow) {
   const currentVersion = work.current_version_id
-    ? await db.prepare("SELECT * FROM work_versions WHERE id = ?").bind(work.current_version_id).first<WorkVersionRow>()
+    ? await env.DB.prepare("SELECT * FROM work_versions WHERE id = ?").bind(work.current_version_id).first<WorkVersionRow>()
     : null;
-  const caps = await workCapabilities(db, user, work.id);
+  const caps = await workCapabilities(env.DB, user, work.id);
   const [reaction, feedbackDismissal, linkedGalleries] = await Promise.all([
-    reactionSummary(db, user, "work", work.id),
-    db.prepare("SELECT dismissed_at FROM feedback_request_dismissals WHERE work_id = ? AND user_id = ?").bind(work.id, user.id).first<{ dismissed_at: string }>(),
-    workGalleryLinks(db, work),
+    reactionSummary(env.DB, user, "work", work.id),
+    env.DB.prepare("SELECT dismissed_at FROM feedback_request_dismissals WHERE work_id = ? AND user_id = ?").bind(work.id, user.id).first<{ dismissed_at: string }>(),
+    workGalleryLinks(env.DB, work),
   ]);
   const galleries = [];
   for (const gallery of linkedGalleries) {
-    const serialized = await serializeGallery(db, user, gallery);
+    const serialized = await serializeGallery(env, user, gallery);
     if (serialized.capabilities.view) galleries.push(serialized);
   }
   return {
@@ -699,16 +743,22 @@ async function serializeWork(db: D1Database, user: AppUser, work: WorkRow) {
     reactions: reaction,
     capabilities: caps.caps,
     can_create_version: caps.version,
-    current_version: currentVersion ? serializeVersion(currentVersion) : null,
+    current_version: currentVersion ? await serializeVersion(env, currentVersion) : null,
   };
 }
 
-function serializeVersion(version: WorkVersionRow) {
+async function serializeVersion(env: Env, version: WorkVersionRow) {
   return {
     ...version,
-    original_url: version.original_r2_key ? `/api/media/works/${version.work_id}/versions/${version.id}/original` : null,
-    preview_url: version.preview_r2_key ? `/api/media/works/${version.work_id}/versions/${version.id}/preview` : null,
-    thumbnail_url: version.thumbnail_r2_key ? `/api/media/works/${version.work_id}/versions/${version.id}/thumbnail` : null,
+    original_url: version.original_r2_key
+      ? (await signedMediaUrl(env, version.original_r2_key, version.original_content_type, "original", version.original_filename)) || `/api/media/works/${version.work_id}/versions/${version.id}/original`
+      : null,
+    preview_url: version.preview_r2_key
+      ? (await signedMediaUrl(env, version.preview_r2_key, version.preview_content_type, "preview")) || `/api/media/works/${version.work_id}/versions/${version.id}/preview`
+      : null,
+    thumbnail_url: version.thumbnail_r2_key
+      ? (await signedMediaUrl(env, version.thumbnail_r2_key, version.thumbnail_content_type, "thumbnail")) || `/api/media/works/${version.work_id}/versions/${version.id}/thumbnail`
+      : null,
   };
 }
 
@@ -732,8 +782,8 @@ type GalleryWorkListRow = WorkRow & {
   feedback_dismissed_at: string | null;
 };
 
-function serializeGalleryWorkListItem(row: GalleryWorkListRow, caps: GalleryCapabilities) {
-  const currentVersion = row.version_id ? serializeVersion({
+async function serializeGalleryWorkListItem(env: Env, row: GalleryWorkListRow, caps: GalleryCapabilities) {
+  const currentVersion = row.version_id ? await serializeVersion(env, {
     id: row.version_id,
     work_id: row.version_work_id || row.id,
     version_number: row.version_number || 1,
@@ -890,6 +940,20 @@ app.get("/api/auth/me", requireUser, async (c) => {
   return c.json({
     user: publicUser(user, await getTags(c.env.DB, user.id)),
     instance: await instanceInfo(c.env),
+  });
+});
+
+app.get("/api/media/signed/:token", async (c) => {
+  const payload = await readSignedMediaPayload(c.env, c.req.param("token"));
+  if (!payload) return c.json({ error: "Forbidden" }, 403);
+  const object = await c.env.MEDIA.get(payload.key);
+  if (!object) return c.json({ error: "Not found" }, 404);
+  return new Response(object.body, {
+    headers: {
+      "content-type": payload.content_type || object.httpMetadata?.contentType || "application/octet-stream",
+      "cache-control": cacheControl(payload.variant),
+      "content-disposition": payload.variant === "original" && payload.filename ? `attachment; filename="${payload.filename.replace(/"/g, "")}"` : "inline",
+    },
   });
 });
 
@@ -1224,7 +1288,7 @@ app.post("/api/galleries", async (c) => {
   ]);
   await insertEvent(c.env, "gallery.created", user.id, "gallery", id);
   const gallery = await c.env.DB.prepare("SELECT * FROM galleries WHERE id = ?").bind(id).first<GalleryRow>();
-  return c.json({ gallery: await serializeGallery(c.env.DB, user, gallery!) }, 201);
+  return c.json({ gallery: await serializeGallery(c.env, user, gallery!) }, 201);
 });
 
 app.get("/api/galleries", async (c) => {
@@ -1232,7 +1296,7 @@ app.get("/api/galleries", async (c) => {
   const rows = await c.env.DB.prepare("SELECT * FROM galleries ORDER BY updated_at DESC LIMIT 200").all<GalleryRow>();
   const galleries = [];
   for (const gallery of rows.results) {
-    const serialized = await serializeGallery(c.env.DB, user, gallery);
+    const serialized = await serializeGallery(c.env, user, gallery);
     if (serialized.capabilities.view) galleries.push(serialized);
   }
   return c.json({ galleries });
@@ -1304,9 +1368,9 @@ app.get("/api/galleries/:id", async (c) => {
     ).bind(user.id, user.id, gallery.id).all<GalleryWorkListRow>(),
   ]);
   return c.json({
-    gallery: await serializeGallery(c.env.DB, user, gallery),
+    gallery: await serializeGallery(c.env, user, gallery),
     members: members.results,
-    works: works.results.map((work) => serializeGalleryWorkListItem(work, gate.caps)),
+    works: await Promise.all(works.results.map((work) => serializeGalleryWorkListItem(c.env, work, gate.caps))),
   });
 });
 
@@ -1346,7 +1410,7 @@ app.patch("/api/galleries/:id", async (c) => {
   });
   if (visibility !== before.visibility) await insertEvent(c.env, "gallery.visibility_changed", currentUser(c).id, "gallery", id, null, null, { from: before.visibility, to: visibility });
   const gallery = await c.env.DB.prepare("SELECT * FROM galleries WHERE id = ?").bind(id).first<GalleryRow>();
-  return c.json({ gallery: await serializeGallery(c.env.DB, currentUser(c), gallery!) });
+  return c.json({ gallery: await serializeGallery(c.env, currentUser(c), gallery!) });
 });
 
 app.delete("/api/galleries/:id", async (c) => {
@@ -1444,19 +1508,25 @@ async function createWorkVersion(c: Ctx, work: WorkRow, body: Record<string, unk
   let previewKey: string | null = null;
   let thumbnailKey: string | null = null;
   let originalType: string | null = null;
+  let previewType: string | null = null;
+  let thumbnailType: string | null = null;
   let originalFilename: string | null = null;
 
   if (work.type === "image") {
     if (!file) throw new Error("Image file is required");
+    const previewFile = fileField(body.preview || body.preview_file || body.previewFile) || file;
+    const thumbnailFile = fileField(body.thumbnail || body.thumbnail_file || body.thumbnailFile) || previewFile;
     const base = `works/${work.id}/versions/${id}`;
     originalKey = `${base}/original-${file.name || "image"}`;
-    previewKey = `${base}/preview-${file.name || "image"}`;
-    thumbnailKey = `${base}/thumbnail-${file.name || "image"}`;
+    previewKey = `${base}/preview-${previewFile.name || file.name || "image"}`;
+    thumbnailKey = `${base}/thumbnail-${thumbnailFile.name || previewFile.name || file.name || "image"}`;
     originalType = file.type || "application/octet-stream";
+    previewType = previewFile.type || originalType;
+    thumbnailType = thumbnailFile.type || previewType;
     originalFilename = file.name || "image";
     await putR2File(c.env.MEDIA, originalKey, file, { owner: work.created_by, work: work.id, variant: "original" });
-    await putR2File(c.env.MEDIA, previewKey, file, { owner: work.created_by, work: work.id, variant: "preview" });
-    await putR2File(c.env.MEDIA, thumbnailKey, file, { owner: work.created_by, work: work.id, variant: "thumbnail" });
+    await putR2File(c.env.MEDIA, previewKey, previewFile, { owner: work.created_by, work: work.id, variant: "preview" });
+    await putR2File(c.env.MEDIA, thumbnailKey, thumbnailFile, { owner: work.created_by, work: work.id, variant: "thumbnail" });
   }
 
   await c.env.DB.prepare(
@@ -1473,9 +1543,9 @@ async function createWorkVersion(c: Ctx, work: WorkRow, body: Record<string, unk
     originalKey,
     originalType,
     previewKey,
-    originalType,
+    previewType || originalType,
     thumbnailKey,
-    originalType,
+    thumbnailType || previewType || originalType,
     originalFilename,
     user.id,
     timestamp,
@@ -1575,7 +1645,7 @@ app.post("/api/galleries/:galleryId/works", async (c) => {
       "SELECT * FROM works WHERE created_by = ? AND client_upload_key = ? AND deleted_at IS NULL",
     ).bind(user.id, clientUploadKey).first<WorkRow>();
     if (existing) {
-      return c.json({ work: await serializeWork(c.env.DB, user, existing), duplicate: true, collaborator_results: [] });
+      return c.json({ work: await serializeWork(c.env, user, existing), duplicate: true, collaborator_results: [] });
     }
   }
 
@@ -1606,7 +1676,7 @@ app.post("/api/galleries/:galleryId/works", async (c) => {
       const existing = await c.env.DB.prepare(
         "SELECT * FROM works WHERE created_by = ? AND client_upload_key = ? AND deleted_at IS NULL",
       ).bind(user.id, clientUploadKey).first<WorkRow>();
-      if (existing) return c.json({ work: await serializeWork(c.env.DB, user, existing), duplicate: true, collaborator_results: [] });
+      if (existing) return c.json({ work: await serializeWork(c.env, user, existing), duplicate: true, collaborator_results: [] });
     }
     return c.json({ error: error instanceof Error ? error.message : "Could not create work" }, 500);
   }
@@ -1625,7 +1695,7 @@ app.post("/api/galleries/:galleryId/works", async (c) => {
   for (let index = 0; index < collaboratorInputs.length; index += 1) {
     collaboratorResults.push(await createWorkCollaborator(c, id, { ...collaboratorInputs[index], credit_order: index }));
   }
-  return c.json({ work: await serializeWork(c.env.DB, user, (await getWork(c.env.DB, id))!), collaborator_results: collaboratorResults }, 201);
+  return c.json({ work: await serializeWork(c.env, user, (await getWork(c.env.DB, id))!), collaborator_results: collaboratorResults }, 201);
 });
 
 app.get("/api/works/:id", async (c) => {
@@ -1640,8 +1710,8 @@ app.get("/api/works/:id", async (c) => {
      ORDER BY work_collaborators.credit_order, work_collaborators.display_name`,
   ).bind(gate.work!.id).all();
   return c.json({
-    work: await serializeWork(c.env.DB, currentUser(c), gate.work!),
-    versions: versions.results.map(serializeVersion),
+    work: await serializeWork(c.env, currentUser(c), gate.work!),
+    versions: await Promise.all(versions.results.map((version) => serializeVersion(c.env, version))),
     collaborators: collaborators.results,
   });
 });
@@ -1700,7 +1770,7 @@ app.patch("/api/works/:id", async (c) => {
     c.env.DB.prepare("UPDATE galleries SET updated_at = ? WHERE id IN (SELECT gallery_id FROM work_galleries WHERE work_id = ?)").bind(timestamp, work.id),
   ]);
   await insertEvent(c.env, "work.updated", currentUser(c).id, "work", work.id);
-  return c.json({ work: await serializeWork(c.env.DB, currentUser(c), (await getWork(c.env.DB, work.id))!) });
+  return c.json({ work: await serializeWork(c.env, currentUser(c), (await getWork(c.env.DB, work.id))!) });
 });
 
 app.post("/api/works/:id/galleries", async (c) => {
@@ -1722,7 +1792,7 @@ app.post("/api/works/:id/galleries", async (c) => {
     c.env.DB.prepare("UPDATE galleries SET updated_at = ? WHERE id = ?").bind(timestamp, galleryId),
   ]);
   await insertEvent(c.env, "work.updated", currentUser(c).id, "work", workGate.work!.id, "gallery", galleryId, { crossposted_to_gallery_id: galleryId });
-  return c.json({ work: await serializeWork(c.env.DB, currentUser(c), (await getWork(c.env.DB, workGate.work!.id))!) });
+  return c.json({ work: await serializeWork(c.env, currentUser(c), (await getWork(c.env.DB, workGate.work!.id))!) });
 });
 
 app.delete("/api/works/:id/galleries/:galleryId", async (c) => {
@@ -1732,7 +1802,7 @@ app.delete("/api/works/:id/galleries/:galleryId", async (c) => {
   if ((count?.count || 0) <= 1) return c.json({ error: "A work must remain in at least one gallery" }, 400);
   await c.env.DB.prepare("DELETE FROM work_galleries WHERE work_id = ? AND gallery_id = ?").bind(workGate.work!.id, c.req.param("galleryId")).run();
   await insertEvent(c.env, "work.updated", currentUser(c).id, "work", workGate.work!.id);
-  return c.json({ work: await serializeWork(c.env.DB, currentUser(c), (await getWork(c.env.DB, workGate.work!.id))!) });
+  return c.json({ work: await serializeWork(c.env, currentUser(c), (await getWork(c.env.DB, workGate.work!.id))!) });
 });
 
 app.delete("/api/works/:id", async (c) => {
@@ -1754,7 +1824,7 @@ app.post("/api/works/:id/versions", async (c) => {
   const body = await readBody(c);
   try {
     const version = await createWorkVersion(c, gate.work!, body);
-    return c.json({ version: serializeVersion(version) }, 201);
+    return c.json({ version: await serializeVersion(c.env, version) }, 201);
   } catch (error) {
     return c.json({ error: error instanceof Error ? error.message : "Could not create version" }, 400);
   }
@@ -1923,7 +1993,7 @@ app.get("/api/tags/:tag", async (c) => {
   const galleries = [];
   for (const gallery of galleryRows.results) {
     if ((await galleryCapabilities(c.env.DB, user, gallery.id)).view) {
-      galleries.push(await serializeGallery(c.env.DB, user, gallery));
+      galleries.push(await serializeGallery(c.env, user, gallery));
     }
   }
 
@@ -1934,7 +2004,7 @@ app.get("/api/tags/:tag", async (c) => {
   ).bind(pattern, pattern).all<WorkRow>();
   const works = [];
   for (const work of workRows.results) {
-    const serialized = await serializeWork(c.env.DB, user, work);
+    const serialized = await serializeWork(c.env, user, work);
     if (serialized.capabilities.view) works.push(serialized);
   }
 
@@ -2011,15 +2081,16 @@ async function eventVisibleTo(db: D1Database, user: AppUser, event: ActivityRow)
   return user.role === "admin" || event.subject_type === "user" || event.subject_type === "profile";
 }
 
-async function workThumbnail(db: D1Database, workId: string, versionId = "") {
+async function workThumbnail(env: Env, workId: string, versionId = "") {
   const version = versionId
-    ? await db.prepare("SELECT * FROM work_versions WHERE id = ? AND work_id = ?").bind(versionId, workId).first<WorkVersionRow>()
-    : await db.prepare(
+    ? await env.DB.prepare("SELECT * FROM work_versions WHERE id = ? AND work_id = ?").bind(versionId, workId).first<WorkVersionRow>()
+    : await env.DB.prepare(
       `SELECT work_versions.*
        FROM work_versions JOIN works ON works.current_version_id = work_versions.id
        WHERE works.id = ?`,
     ).bind(workId).first<WorkVersionRow>();
-  return version?.thumbnail_r2_key ? `/api/media/works/${workId}/versions/${version.id}/thumbnail` : null;
+  if (!version?.thumbnail_r2_key) return null;
+  return (await signedMediaUrl(env, version.thumbnail_r2_key, version.thumbnail_content_type, "thumbnail")) || `/api/media/works/${workId}/versions/${version.id}/thumbnail`;
 }
 
 async function activityEntry(env: Env, user: AppUser, event: ActivityRow) {
@@ -2045,13 +2116,13 @@ async function activityEntry(env: Env, user: AppUser, event: ActivityRow) {
           : `${actorLabel} updated gallery "${gallery.title}"`;
       }
       if (event.type === "gallery.visibility_changed") summary = `${actorLabel} changed visibility on "${gallery.title}"`;
-      if (gallery.cover_version_id && gallery.cover_work_id) thumbnail_url = await workThumbnail(env.DB, gallery.cover_work_id, gallery.cover_version_id);
+      if (gallery.cover_version_id && gallery.cover_work_id) thumbnail_url = await workThumbnail(env, gallery.cover_work_id, gallery.cover_version_id);
     }
   } else if (event.type === "work.created" || event.type === "work.updated" || event.type === "work.version_created" || event.type === "work.feedback_requested") {
     const work = await getWork(env.DB, event.subject_id);
     if (work) {
       href = `/works/${work.id}`;
-      thumbnail_url = await workThumbnail(env.DB, work.id, typeof payload.version_id === "string" ? payload.version_id : "");
+      thumbnail_url = await workThumbnail(env, work.id, typeof payload.version_id === "string" ? payload.version_id : "");
       if (event.type === "work.created") summary = `${actorLabel} added "${work.title}"`;
       if (event.type === "work.updated") summary = `${actorLabel} updated work "${work.title}"`;
       if (event.type === "work.version_created") summary = `${actorLabel} updated work "${work.title}"`;
@@ -2065,7 +2136,7 @@ async function activityEntry(env: Env, user: AppUser, event: ActivityRow) {
       const work = await getWork(env.DB, event.target_id);
       if (work) {
         href = `/works/${work.id}`;
-        thumbnail_url = await workThumbnail(env.DB, work.id);
+        thumbnail_url = await workThumbnail(env, work.id);
         summary = mentionedYou ? `${actorLabel} mentioned you on "${work.title}"` : `${actorLabel} commented on "${work.title}"`;
       }
     } else if (event.target_type === "gallery" && event.target_id) {
@@ -2082,7 +2153,7 @@ async function activityEntry(env: Env, user: AppUser, event: ActivityRow) {
       ).bind(event.target_id).first<{ id: string; work_id: string; title: string }>();
       if (version) {
         href = `/works/${version.work_id}`;
-        thumbnail_url = await workThumbnail(env.DB, version.work_id, version.id);
+        thumbnail_url = await workThumbnail(env, version.work_id, version.id);
         summary = mentionedYou ? `${actorLabel} mentioned you on a version of "${version.title}"` : `${actorLabel} commented on a version of "${version.title}"`;
       }
     } else if (mentionedYou) {
@@ -2096,7 +2167,7 @@ async function activityEntry(env: Env, user: AppUser, event: ActivityRow) {
       const work = await getWork(env.DB, targetId);
       if (work) {
         href = `/works/${work.id}`;
-        thumbnail_url = await workThumbnail(env.DB, work.id);
+        thumbnail_url = await workThumbnail(env, work.id);
         summary = `${actorLabel} liked "${work.title}"`;
       }
     } else if (targetType === "comment") {
