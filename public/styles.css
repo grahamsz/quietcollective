@@ -1269,6 +1269,32 @@ tr:last-child td {
   transition: transform 0.18s ease, filter 0.18s ease;
 }
 
+.image-grid {
+  display: block;
+  column-gap: 4px;
+  column-width: 180px;
+}
+
+.image-tile {
+  display: block;
+  aspect-ratio: auto;
+  break-inside: avoid;
+  margin: 0 0 4px;
+}
+
+.image-tile img {
+  display: block;
+  width: 100%;
+  height: auto;
+  object-fit: contain;
+}
+
+.image-tile .image-placeholder {
+  display: grid;
+  min-height: 130px;
+  place-items: center;
+}
+
 .gallery-tile:hover img,
 .image-tile:hover img {
   transform: scale(1.025);
@@ -1683,14 +1709,16 @@ tr:last-child td {
 }
 
 @media (max-width: 680px) {
-  .gallery-mosaic,
-  .image-grid {
+  .gallery-mosaic {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 
-  .gallery-tile,
-  .image-tile {
+  .gallery-tile {
     aspect-ratio: 7 / 5;
+  }
+
+  .image-grid {
+    column-width: 145px;
   }
 
   .activity-row {

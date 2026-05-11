@@ -60,6 +60,11 @@ function newestFirst(a, b) {
   return String(b.updated_at || b.created_at || "").localeCompare(String(a.updated_at || a.created_at || ""));
 }
 
+function clientKey(prefix = "qc") {
+  if (crypto.randomUUID) return `${prefix}:${crypto.randomUUID()}`;
+  return `${prefix}:${Date.now().toString(36)}:${Math.random().toString(36).slice(2)}`;
+}
+
 function initials(name) {
   const bits = String(name || "QC").trim().split(/\s+/).slice(0, 2);
   return bits.map((bit) => bit[0]?.toUpperCase() || "").join("") || "QC";
@@ -849,6 +854,7 @@ async function openWorkUploadModal(galleryId, file) {
   await loadRoleSuggestions();
   const previewUrl = URL.createObjectURL(file);
   const title = file.name ? file.name.replace(/\.[^.]+$/, "") : "";
+  const uploadKey = clientKey("work-upload");
   const modal = document.createElement("div");
   modal.className = "modal-backdrop";
   modal.dataset.uploadModal = "true";
@@ -869,20 +875,33 @@ async function openWorkUploadModal(galleryId, file) {
   modal.querySelector("[data-upload-details-form]").addEventListener("submit", async (event) => {
     event.preventDefault();
     const form = event.currentTarget;
+    if (form.dataset.submitting === "true") return;
     syncMarkdownEditors(form);
+    const collaborators = collaboratorPayloads(form);
     const body = new FormData();
     body.set("file", file);
     body.set("title", field(form, "title").value || title || "Untitled image");
     body.set("description", field(form, "description").value || "");
+    body.set("client_upload_key", uploadKey);
+    body.set("collaborators_json", JSON.stringify(collaborators));
+    const submit = form.querySelector("[type=submit]");
+    form.dataset.submitting = "true";
+    submit?.setAttribute("disabled", "disabled");
+    const previousLabel = submit?.textContent || "";
+    if (submit) submit.textContent = "Uploading...";
     try {
-      const collaborators = collaboratorPayloads(form);
       const data = await api(`/api/galleries/${encodePath(galleryId)}/works`, { method: "POST", body });
-      await addCollaborators(data.work.id, collaborators);
       await loadRoleSuggestions();
+      const failed = (data.collaborator_results || []).filter((result) => !result.ok);
+      if (failed.length) toast(`Image uploaded, but ${failed.length} collaborator${failed.length === 1 ? "" : "s"} could not be added.`, "error");
+      else toast(data.duplicate ? "Upload already completed" : "Image uploaded");
       close();
       navigate(`/works/${data.work.id}`);
     } catch (error) {
       toast(error.message, "error");
+      form.dataset.submitting = "false";
+      submit?.removeAttribute("disabled");
+      if (submit) submit.textContent = previousLabel;
     }
   });
 }
@@ -936,10 +955,11 @@ async function renderWork(id) {
   const gallery = currentWorkGallery(work);
   const comments = await api(`/api/works/${encodePath(id)}/comments`).catch(() => ({ comments: [] }));
   const media = version?.preview_url ? `<div class="media-frame"><img src="${escapeHtml(version.preview_url)}" alt=""></div>` : empty("No image version is available.");
-  setApp(pageShell(`<section class="view work-view"><div class="view-header"><div><p class="eyebrow"><a href="/galleries/${escapeHtml(gallery.id)}" data-link>${escapeHtml(gallery.title)}</a></p><h1>${escapeHtml(work.title)}</h1><div class="lede markdown-body">${renderMarkdown(work.description || "")}</div><div class="badge-row">${badge("image")}</div></div><div class="toolbar">${reactionButton("work", id, work.reactions)}${work.feedback_requested && !work.feedback_dismissed ? button("Dismiss feedback request", "button ghost", `data-dismiss-feedback="${escapeHtml(id)}"`) : ""}${link(`/works/${id}/versions`, "Versions", "button")}${work.capabilities.edit ? link(`/works/${id}/edit`, "Edit", "button primary") : ""}</div></div>${media}<div class="grid two">${panel("Collaborators", (data.collaborators || []).map((collab) => `<article class="comment-card"><h3 class="card-title">${collaboratorLabel(collab)}</h3><p class="description">${escapeHtml(collab.role_label || "collaborator")}</p></article>`).join("") || empty("No collaborators credited yet."))}${workCommentsPanel(id, data.versions || [], comments.comments, version?.id || "")}</div></section>`));
+  setApp(pageShell(`<section class="view work-view"><div class="view-header"><div><p class="eyebrow"><a href="/galleries/${escapeHtml(gallery.id)}" data-link>${escapeHtml(gallery.title)}</a></p><h1>${escapeHtml(work.title)}</h1><div class="lede markdown-body">${renderMarkdown(work.description || "")}</div><div class="badge-row">${badge("image")}</div></div><div class="toolbar">${reactionButton("work", id, work.reactions)}${work.feedback_requested && !work.feedback_dismissed ? button("Dismiss feedback request", "button ghost", `data-dismiss-feedback="${escapeHtml(id)}"`) : ""}${link(`/works/${id}/versions`, "Versions", "button")}${work.capabilities.edit ? link(`/works/${id}/edit`, "Edit", "button primary") + button("Delete", "button warn", `data-delete-work="${escapeHtml(id)}" data-after-delete="/galleries/${escapeHtml(gallery.id)}"`) : ""}</div></div>${media}<div class="grid two">${panel("Collaborators", (data.collaborators || []).map((collab) => `<article class="comment-card"><h3 class="card-title">${collaboratorLabel(collab)}</h3><p class="description">${escapeHtml(collab.role_label || "collaborator")}</p></article>`).join("") || empty("No collaborators credited yet."))}${workCommentsPanel(id, data.versions || [], comments.comments, version?.id || "")}</div></section>`));
   bindCommentForm("work", id);
   bindVersionOverlay(data.versions || []);
   bindFeedbackDismiss();
+  bindDeleteWork();
 }
 
 function existingCollaborators(collaborators, workId) {
@@ -953,7 +973,7 @@ async function renderWorkEdit(id) {
   const work = data.work;
   const linkedIds = new Set((work.galleries || []).map((gallery) => gallery.id));
   const crosspostOptions = state.galleries.filter((gallery) => gallery.capabilities?.upload_work && !linkedIds.has(gallery.id));
-  setApp(pageShell(`<section class="view"><div class="view-header"><div><p class="eyebrow">Edit image</p><h1>${escapeHtml(work.title)}</h1></div><div class="toolbar">${button(work.feedback_requested ? "Clear feedback request" : "Request feedback", "button", `data-toggle-feedback="${escapeHtml(id)}" data-feedback-requested="${work.feedback_requested ? "true" : "false"}"`)}</div></div><div class="grid two">${panel("Details", `<form class="form" id="work-edit-form"><div class="form-row"><label>Title</label><input name="title" value="${escapeHtml(work.title)}" required></div><div class="form-row"><label>Description</label><textarea name="description" data-markdown-editor data-target-type="work" data-target-id="${escapeHtml(id)}">${escapeHtml(work.description || "")}</textarea>${markdownHint()}</div>${button("Save work", "button primary", "type=submit")}</form><hr><form class="form" id="crosspost-form"><div class="form-row"><label>Galleries</label><div class="collaborator-list">${(work.galleries || []).map((gallery) => `<div class="collaborator-list-row"><span><a href="/galleries/${escapeHtml(gallery.id)}" data-link>${escapeHtml(gallery.title)}</a></span><strong>${escapeHtml(relativeTime(gallery.updated_at || gallery.created_at))}</strong>${(work.galleries || []).length > 1 ? button("Remove", "button ghost", `type=button data-remove-work-gallery="${escapeHtml(gallery.id)}"`) : ""}</div>`).join("")}</div></div><div class="form-row"><label>Crosspost to gallery</label><select name="gallery_id"><option value="">Choose a gallery</option>${crosspostOptions.map((gallery) => `<option value="${escapeHtml(gallery.id)}">${escapeHtml(gallery.title)}</option>`).join("")}</select></div>${button("Add to gallery", "button", "type=submit")}</form><hr><form class="form" id="collab-form"><div class="form-row"><label>Collaborators</label>${existingCollaborators(data.collaborators || [], id)}</div>${collaboratorCreditRows({ listId: "edit-work-role-options" })}${button("Add collaborators", "button", "type=submit")}</form>`)}${panel("New Version", `<form class="form" id="version-form"><label class="drop-zone" for="version-file" data-drop-zone><input id="version-file" name="file" type="file" accept="image/*" capture="environment" required><span>Drop a replacement image here, choose a file, or use the camera on mobile.</span><strong data-file-name>No image selected</strong></label>${button("Create version", "button primary", "type=submit")}</form>`)}</div></section>`));
+  setApp(pageShell(`<section class="view"><div class="view-header"><div><p class="eyebrow">Edit image</p><h1>${escapeHtml(work.title)}</h1></div><div class="toolbar">${button(work.feedback_requested ? "Clear feedback request" : "Request feedback", "button", `data-toggle-feedback="${escapeHtml(id)}" data-feedback-requested="${work.feedback_requested ? "true" : "false"}"`)}${button("Delete", "button warn", `data-delete-work="${escapeHtml(id)}" data-after-delete="${escapeHtml(work.galleries?.[0]?.id ? `/galleries/${work.galleries[0].id}` : "/galleries")}"`)}</div></div><div class="grid two">${panel("Details", `<form class="form" id="work-edit-form"><div class="form-row"><label>Title</label><input name="title" value="${escapeHtml(work.title)}" required></div><div class="form-row"><label>Description</label><textarea name="description" data-markdown-editor data-target-type="work" data-target-id="${escapeHtml(id)}">${escapeHtml(work.description || "")}</textarea>${markdownHint()}</div>${button("Save work", "button primary", "type=submit")}</form><hr><form class="form" id="crosspost-form"><div class="form-row"><label>Galleries</label><div class="collaborator-list">${(work.galleries || []).map((gallery) => `<div class="collaborator-list-row"><span><a href="/galleries/${escapeHtml(gallery.id)}" data-link>${escapeHtml(gallery.title)}</a></span><strong>${escapeHtml(relativeTime(gallery.updated_at || gallery.created_at))}</strong>${(work.galleries || []).length > 1 ? button("Remove", "button ghost", `type=button data-remove-work-gallery="${escapeHtml(gallery.id)}"`) : ""}</div>`).join("")}</div></div><div class="form-row"><label>Crosspost to gallery</label><select name="gallery_id"><option value="">Choose a gallery</option>${crosspostOptions.map((gallery) => `<option value="${escapeHtml(gallery.id)}">${escapeHtml(gallery.title)}</option>`).join("")}</select></div>${button("Add to gallery", "button", "type=submit")}</form><hr><form class="form" id="collab-form"><div class="form-row"><label>Collaborators</label>${existingCollaborators(data.collaborators || [], id)}</div>${collaboratorCreditRows({ listId: "edit-work-role-options" })}${button("Add collaborators", "button", "type=submit")}</form>`)}${panel("New Version", `<form class="form" id="version-form"><label class="drop-zone" for="version-file" data-drop-zone><input id="version-file" name="file" type="file" accept="image/*" capture="environment" required><span>Drop a replacement image here, choose a file, or use the camera on mobile.</span><strong data-file-name>No image selected</strong></label>${button("Create version", "button primary", "type=submit")}</form>`)}</div></section>`));
   bindJsonForm("#work-edit-form", async (body) => {
     await api(`/api/works/${encodePath(id)}`, { method: "PATCH", body });
     toast("Work saved");
@@ -982,6 +1002,24 @@ async function renderWorkEdit(id) {
   bindRemoveCollaborator();
   bindVersionForm(id);
   bindFeedbackToggle(id);
+  bindDeleteWork();
+}
+
+function bindDeleteWork() {
+  document.querySelectorAll("[data-delete-work]").forEach((control) => {
+    control.addEventListener("click", async () => {
+      if (!confirm("Delete this work? It will be hidden from galleries and feeds.")) return;
+      control.setAttribute("disabled", "disabled");
+      try {
+        await api(`/api/works/${encodePath(control.dataset.deleteWork)}`, { method: "DELETE" });
+        toast("Work deleted");
+        navigate(control.dataset.afterDelete || "/galleries");
+      } catch (error) {
+        toast(error.message, "error");
+        control.removeAttribute("disabled");
+      }
+    });
+  });
 }
 
 function bindRemoveCollaborator() {

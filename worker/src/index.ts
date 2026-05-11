@@ -18,6 +18,18 @@ const app = new Hono<AppContext>();
 
 type Ctx = Context<AppContext>;
 
+type WorkCollaboratorInput = Record<string, unknown>;
+
+type WorkCollaboratorResult = {
+  ok: boolean;
+  id?: string;
+  display_name?: string;
+  user_id?: string | null;
+  role_label?: string;
+  duplicate?: boolean;
+  error?: string;
+};
+
 const ROLE_SUGGESTIONS = [
   "muse",
   "artist",
@@ -84,6 +96,10 @@ function normalizeTag(value: string) {
 
 function normalizeRoleLabel(value: string) {
   return value.trim().toLowerCase().replace(/\s+/g, " ").slice(0, 80);
+}
+
+function normalizeClientUploadKey(value: string) {
+  return value.trim().replace(/[^a-zA-Z0-9_.:-]/g, "").slice(0, 120);
 }
 
 function normalizeGalleryOwnership(value: unknown): "self" | "collaborative" | "whole_server" {
@@ -1376,6 +1392,77 @@ async function createWorkVersion(c: Ctx, work: WorkRow, body: Record<string, unk
   return (await c.env.DB.prepare("SELECT * FROM work_versions WHERE id = ?").bind(id).first<WorkVersionRow>())!;
 }
 
+function collaboratorInputsFromBody(body: Record<string, unknown>) {
+  const raw = stringField(body.collaborators_json || body.collaboratorsJson, "");
+  const parsed = raw ? parseJson<unknown>(raw, []) : [];
+  return Array.isArray(parsed) ? parsed.filter((item): item is WorkCollaboratorInput => !!item && typeof item === "object") : [];
+}
+
+async function createWorkCollaborator(c: Ctx, workId: string, body: WorkCollaboratorInput): Promise<WorkCollaboratorResult> {
+  const userText = stringField(body.user || body.collaborator_user || body.collaboratorUser || body.display_name || body.displayName);
+  let linkedUserId = stringField(body.user_id || body.userId, "") || null;
+  let linkedUser: AppUser | null = linkedUserId ? (await getUserById(c.env.DB, linkedUserId)) || null : null;
+  if (!linkedUser && userText.startsWith("@")) {
+    linkedUser = (await getUserByHandle(c.env.DB, userText.slice(1))) || null;
+    linkedUserId = linkedUser?.id || null;
+  }
+
+  const displayName = linkedUser?.handle || userText;
+  if (!displayName) return { ok: false, error: "User or collaborator name is required" };
+
+  const roleLabel = normalizeRoleLabel(stringField(body.role_label || body.roleLabel || "collaborator")) || "collaborator";
+  const roleSuggestionId = await ensureWorkRoleSuggestion(c.env.DB, roleLabel, currentUser(c).id);
+  const creditOrder = Math.floor(numberField(body.credit_order || body.creditOrder, 0));
+  const timestamp = now();
+
+  if (linkedUserId) {
+    const existing = await c.env.DB.prepare(
+      "SELECT id FROM work_collaborators WHERE work_id = ? AND user_id = ?",
+    ).bind(workId, linkedUserId).first<{ id: string }>();
+    if (existing) {
+      await c.env.DB.prepare(
+        `UPDATE work_collaborators
+         SET display_name = ?, role_suggestion_id = ?, role_label = ?, credit_order = ?, updated_at = ?
+         WHERE id = ?`,
+      ).bind(displayName, roleSuggestionId, roleLabel, creditOrder, timestamp, existing.id).run();
+      await insertEvent(c.env, "work.collaborator_updated", currentUser(c).id, "work", workId, "work_collaborator", existing.id, { collaborator_id: existing.id, user_id: linkedUserId });
+      return { ok: true, id: existing.id, display_name: displayName, user_id: linkedUserId, role_label: roleLabel, duplicate: true };
+    }
+  }
+
+  const id = ulid();
+  try {
+    await c.env.DB.prepare(
+      `INSERT INTO work_collaborators
+         (id, work_id, display_name, user_id, role_suggestion_id, role_label, credit_order, notes, can_edit, can_version, can_comment, created_by, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, 0, 0, ?, ?, ?)`,
+    ).bind(
+      id,
+      workId,
+      displayName,
+      linkedUserId,
+      roleSuggestionId,
+      roleLabel,
+      creditOrder,
+      "",
+      currentUser(c).id,
+      timestamp,
+      timestamp,
+    ).run();
+  } catch (error) {
+    if (linkedUserId) {
+      const existing = await c.env.DB.prepare(
+        "SELECT id FROM work_collaborators WHERE work_id = ? AND user_id = ?",
+      ).bind(workId, linkedUserId).first<{ id: string }>();
+      if (existing) return { ok: true, id: existing.id, display_name: displayName, user_id: linkedUserId, role_label: roleLabel, duplicate: true };
+    }
+    return { ok: false, display_name: displayName, user_id: linkedUserId, role_label: roleLabel, error: error instanceof Error ? error.message : "Could not add collaborator" };
+  }
+
+  await insertEvent(c.env, "work.collaborator_added", currentUser(c).id, "work", workId, "work_collaborator", id, { collaborator_id: id, user_id: linkedUserId });
+  return { ok: true, id, display_name: displayName, user_id: linkedUserId, role_label: roleLabel };
+}
+
 app.post("/api/galleries/:galleryId/works", async (c) => {
   const galleryId = c.req.param("galleryId");
   const gate = await assertGalleryCapability(c, galleryId, "upload_work");
@@ -1384,26 +1471,48 @@ app.post("/api/galleries/:galleryId/works", async (c) => {
   const type = "image";
   const file = fileField(body.file || body.image);
   const title = stringField(body.title) || (file?.name ? file.name.replace(/\.[^.]+$/, "") : "Untitled image");
+  const user = currentUser(c);
+  const clientUploadKey = normalizeClientUploadKey(stringField(body.client_upload_key || body.clientUploadKey, ""));
+  if (clientUploadKey) {
+    const existing = await c.env.DB.prepare(
+      "SELECT * FROM works WHERE created_by = ? AND client_upload_key = ? AND deleted_at IS NULL",
+    ).bind(user.id, clientUploadKey).first<WorkRow>();
+    if (existing) {
+      return c.json({ work: await serializeWork(c.env.DB, user, existing), duplicate: true, collaborator_results: [] });
+    }
+  }
+
   const id = ulid();
   const timestamp = now();
-  const user = currentUser(c);
-  await c.env.DB.prepare(
+  const collaboratorInputs = collaboratorInputsFromBody(body);
+  try {
+    await c.env.DB.prepare(
     `INSERT INTO works
-       (id, gallery_id, type, title, description, content_warning, feedback_requested, feedback_prompt, created_by, created_at, updated_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-  ).bind(
-    id,
-    galleryId,
-    type,
-    title,
-    stringField(body.description),
-    null,
-    0,
-    null,
-    user.id,
-    timestamp,
-    timestamp,
-  ).run();
+       (id, gallery_id, type, title, description, content_warning, feedback_requested, feedback_prompt, created_by, created_at, updated_at, client_upload_key)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    ).bind(
+      id,
+      galleryId,
+      type,
+      title,
+      stringField(body.description),
+      null,
+      0,
+      null,
+      user.id,
+      timestamp,
+      timestamp,
+      clientUploadKey || null,
+    ).run();
+  } catch (error) {
+    if (clientUploadKey) {
+      const existing = await c.env.DB.prepare(
+        "SELECT * FROM works WHERE created_by = ? AND client_upload_key = ? AND deleted_at IS NULL",
+      ).bind(user.id, clientUploadKey).first<WorkRow>();
+      if (existing) return c.json({ work: await serializeWork(c.env.DB, user, existing), duplicate: true, collaborator_results: [] });
+    }
+    return c.json({ error: error instanceof Error ? error.message : "Could not create work" }, 500);
+  }
   await c.env.DB.prepare(
     "INSERT OR IGNORE INTO work_galleries (work_id, gallery_id, added_by, created_at, updated_at) VALUES (?, ?, ?, ?, ?)",
   ).bind(id, galleryId, user.id, timestamp, timestamp).run();
@@ -1415,7 +1524,11 @@ app.post("/api/galleries/:galleryId/works", async (c) => {
     return c.json({ error: error instanceof Error ? error.message : "Could not create work version" }, 400);
   }
   await insertEvent(c.env, "work.created", user.id, "work", id, "gallery", galleryId);
-  return c.json({ work: await serializeWork(c.env.DB, user, (await getWork(c.env.DB, id))!) }, 201);
+  const collaboratorResults = [];
+  for (let index = 0; index < collaboratorInputs.length; index += 1) {
+    collaboratorResults.push(await createWorkCollaborator(c, id, { ...collaboratorInputs[index], credit_order: index }));
+  }
+  return c.json({ work: await serializeWork(c.env.DB, user, (await getWork(c.env.DB, id))!), collaborator_results: collaboratorResults }, 201);
 });
 
 app.get("/api/works/:id", async (c) => {
@@ -1528,7 +1641,12 @@ app.delete("/api/works/:id/galleries/:galleryId", async (c) => {
 app.delete("/api/works/:id", async (c) => {
   const gate = await assertWorkCapability(c, c.req.param("id"), "edit");
   if (!gate.ok) return gate.response;
-  await c.env.DB.prepare("UPDATE works SET deleted_at = ?, updated_at = ? WHERE id = ?").bind(now(), now(), c.req.param("id")).run();
+  const timestamp = now();
+  await c.env.DB.batch([
+    c.env.DB.prepare("UPDATE works SET deleted_at = ?, updated_at = ? WHERE id = ?").bind(timestamp, timestamp, c.req.param("id")),
+    c.env.DB.prepare("UPDATE galleries SET updated_at = ? WHERE id IN (SELECT gallery_id FROM work_galleries WHERE work_id = ?)").bind(timestamp, c.req.param("id")),
+  ]);
+  await insertEvent(c.env, "work.updated", currentUser(c).id, "work", c.req.param("id"), null, null, { deleted: true });
   return c.json({ ok: true });
 });
 
@@ -1579,37 +1697,9 @@ app.post("/api/works/:id/collaborators", async (c) => {
   const gate = await assertWorkCapability(c, c.req.param("id"), "edit");
   if (!gate.ok) return gate.response;
   const body = await readBody(c);
-  const id = ulid();
-  const userText = stringField(body.user || body.collaborator_user || body.collaboratorUser || body.display_name || body.displayName);
-  let linkedUserId = stringField(body.user_id || body.userId, "") || null;
-  let linkedUser: AppUser | null = linkedUserId ? (await getUserById(c.env.DB, linkedUserId)) || null : null;
-  if (!linkedUser && userText.startsWith("@")) {
-    linkedUser = (await getUserByHandle(c.env.DB, userText.slice(1))) || null;
-    linkedUserId = linkedUser?.id || null;
-  }
-  const displayName = linkedUser?.handle || userText;
-  if (!displayName) return c.json({ error: "User or collaborator name is required" }, 400);
-  const roleLabel = normalizeRoleLabel(stringField(body.role_label || body.roleLabel || "collaborator")) || "collaborator";
-  const roleSuggestionId = await ensureWorkRoleSuggestion(c.env.DB, roleLabel, currentUser(c).id);
-  await c.env.DB.prepare(
-    `INSERT INTO work_collaborators
-       (id, work_id, display_name, user_id, role_suggestion_id, role_label, credit_order, notes, can_edit, can_version, can_comment, created_by, created_at, updated_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, 0, 0, ?, ?, ?)`,
-  ).bind(
-    id,
-    c.req.param("id"),
-    displayName,
-    linkedUserId,
-    roleSuggestionId,
-    roleLabel,
-    Math.floor(numberField(body.credit_order || body.creditOrder, 0)),
-    "",
-    currentUser(c).id,
-    now(),
-    now(),
-  ).run();
-  await insertEvent(c.env, "work.collaborator_added", currentUser(c).id, "work", c.req.param("id"), "work_collaborator", id, { collaborator_id: id, user_id: linkedUserId });
-  return c.json({ id }, 201);
+  const result = await createWorkCollaborator(c, c.req.param("id"), body);
+  if (!result.ok) return c.json({ error: result.error || "Could not add collaborator" }, 400);
+  return c.json(result, result.duplicate ? 200 : 201);
 });
 
 app.patch("/api/works/:id/collaborators/:collaboratorId", async (c) => {

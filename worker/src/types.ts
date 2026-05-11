@@ -74,6 +74,7 @@ export interface WorkRow {
   created_at: string;
   updated_at: string;
   deleted_at: string | null;
+  client_upload_key: string | null;
 }
 
 export interface WorkVersionRow {
