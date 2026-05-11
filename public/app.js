@@ -627,7 +627,9 @@ async function renderHome() {
     loadGalleries(),
   ]);
   const details = await Promise.all(state.galleries.slice(0, 8).map((gallery) => api(`/api/galleries/${gallery.id}`).catch(() => null)));
-  const works = details.flatMap((detail) => detail?.works || []).filter((work) => !work.deleted_at).sort(newestFirst);
+  const works = Array.from(
+    new Map(details.flatMap((detail) => detail?.works || []).filter((work) => !work.deleted_at).map((work) => [work.id, work])).values(),
+  ).sort(newestFirst);
   const feedbackWorks = works.filter((work) => work.feedback_requested && !work.feedback_dismissed);
   const unreadNotifications = (notificationsData.notifications || []).filter((notification) => !notification.read_at);
   setApp(pageShell(`
@@ -636,7 +638,7 @@ async function renderHome() {
       <div class="view-header"><div><p class="eyebrow">Recently Updated</p><h1>${escapeHtml(state.instance.name || "QuietCollective")}</h1><p class="lede">Private image galleries, critique, collaborator credits, and member profiles for logged-in members.</p></div><div class="toolbar">${link("/galleries/new", "+", "button primary square-button")}</div></div>
       ${state.galleries.length ? galleryMosaic(state.galleries.slice(0, 14)) : empty("No visible galleries yet.")}
       ${feedbackWorks.length ? panel("Feedback Requested", imageGrid(feedbackWorks.slice(0, 12)), "flush-panel") : ""}
-      ${works.length ? panel("Fresh Images", imageGrid(works.slice(0, 18)), "flush-panel") : ""}
+      ${works.length ? panel("Fresh Works", imageGrid(works.slice(0, 18)), "flush-panel") : ""}
       <div class="home-lower-grid">${panel("Activity", activity.events?.length ? eventList(activity.events.slice(0, 18)) : empty("No recent visible activity."), "activity-panel")}${panel("Members", `<div class="member-rail">${state.members.map(memberMini).join("")}</div>`)}</div>
     </section>
   `));
