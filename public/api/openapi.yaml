@@ -117,6 +117,30 @@ components:
               type: integer
             additional_viewer_count:
               type: integer
+            submitters:
+              type: array
+              items:
+                type: object
+                properties:
+                  handle:
+                    type: string
+                  display_name:
+                    type: string
+            submitter_count:
+              type: integer
+            additional_submitter_count:
+              type: integer
+            viewers:
+              type: array
+              items:
+                type: object
+                properties:
+                  handle:
+                    type: string
+                  display_name:
+                    type: string
+            additional_visible_viewer_count:
+              type: integer
         capabilities:
           $ref: "#/components/schemas/Capabilities"
         created_at:
@@ -171,6 +195,8 @@ components:
           $ref: "#/components/schemas/ReactionSummary"
         capabilities:
           $ref: "#/components/schemas/Capabilities"
+        can_crosspost:
+          type: boolean
         created_by:
           type: string
         created_at:
@@ -309,6 +335,8 @@ components:
         application/json:
           schema:
             $ref: "#/components/schemas/Error"
+    NotModified:
+      description: Response body is unchanged for the supplied If-None-Match ETag; use the cached JSON body.
 
 paths:
   /api/health:
@@ -530,6 +558,8 @@ paths:
       responses:
         "200":
           description: Visible galleries.
+        "304":
+          $ref: "#/components/responses/NotModified"
     post:
       summary: Create gallery
       requestBody:
@@ -565,6 +595,8 @@ paths:
       responses:
         "200":
           description: Gallery, members, and works.
+        "304":
+          $ref: "#/components/responses/NotModified"
     patch:
       summary: Update gallery settings
       responses:
@@ -614,6 +646,44 @@ paths:
         "201":
           description: Work created.
 
+  /api/galleries/{id}/crosspost-candidates:
+    get:
+      summary: List works the current user can crosspost to a gallery
+      description: Returns works owned by the current user or works where they are credited as a collaborator. Candidates already in the target gallery are excluded.
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Crosspost candidates and visibility-warning metadata.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  gallery:
+                    $ref: "#/components/schemas/Gallery"
+                  works:
+                    type: array
+                    items:
+                      allOf:
+                        - $ref: "#/components/schemas/Work"
+                        - type: object
+                          properties:
+                            crosspost:
+                              type: object
+                              properties:
+                                relationship:
+                                  type: string
+                                  enum: [owner, collaborator]
+                                increases_visibility:
+                                  type: boolean
+                                warning:
+                                  type: [string, "null"]
+
   /api/works/{id}:
     get:
       summary: Work detail
@@ -636,6 +706,29 @@ paths:
       responses:
         "200":
           description: Work hidden from feeds.
+
+  /api/works/{id}/galleries:
+    post:
+      summary: Crosspost a work to another gallery
+      description: The caller must be the work owner, an admin, or an explicit collaborator on the work, and must be allowed to upload to the target gallery.
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [gallery_id]
+              properties:
+                gallery_id:
+                  type: string
+      responses:
+        "200":
+          description: Work crossposted.
 
   /api/works/{id}/versions:
     post:
@@ -678,6 +771,8 @@ paths:
       responses:
         "200":
           description: Comments.
+        "304":
+          $ref: "#/components/responses/NotModified"
     post:
       summary: Create comment
       requestBody:
@@ -705,6 +800,8 @@ paths:
       responses:
         "200":
           description: Events visible to the current member.
+        "304":
+          $ref: "#/components/responses/NotModified"
 
   /api/notifications:
     get:
@@ -712,6 +809,8 @@ paths:
       responses:
         "200":
           description: Notifications with hydrated activity summary fields.
+        "304":
+          $ref: "#/components/responses/NotModified"
 
   /api/notifications/{id}/read:
     post:
@@ -736,6 +835,7 @@ paths:
   /api/exports/me:
     get:
       summary: List my exports
+      description: Ready exports include expiry metadata. Undownloaded ready exports are deleted after 7 days.
       responses:
         "200":
           description: Export jobs.
@@ -747,7 +847,8 @@ paths:
 
   /api/exports/{id}:
     get:
-      summary: Open export manifest
+      summary: Download export archive
+      description: Returns a ZIP archive containing data/export.json, works.csv, and exported high-resolution WebP work files. Downloading marks the export as downloaded; undownloaded ready exports are deleted after 7 days. Older export jobs may fall back to the legacy JSON manifest.
       parameters:
         - name: id
           in: path
@@ -756,4 +857,4 @@ paths:
             type: string
       responses:
         "200":
-          description: Export manifest JSON.
+          description: Export ZIP archive.

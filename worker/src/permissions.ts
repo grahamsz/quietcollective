@@ -12,6 +12,7 @@ export type WorkCollaboratorPermissions = {
 export type ResolvedWorkCapabilities = {
   caps: GalleryCapabilities;
   version: boolean;
+  crosspost: boolean;
 };
 
 export function resolveWorkCapabilities({
@@ -31,6 +32,7 @@ export function resolveWorkCapabilities({
   const collaboratorCanVersion = !!collaborator?.can_version;
   const collaboratorCanComment = !!collaborator?.can_comment;
   const canEdit = ownsWork || admin || collaboratorCanEdit;
+  const canCrosspost = ownsWork || admin || !!collaborator;
 
   return {
     caps: {
@@ -41,5 +43,6 @@ export function resolveWorkCapabilities({
       manage_collaborators: canEdit,
     },
     version: canEdit || collaboratorCanVersion,
+    crosspost: canCrosspost,
   };
 }

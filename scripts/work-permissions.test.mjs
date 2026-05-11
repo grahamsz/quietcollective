@@ -75,6 +75,7 @@ test("gallery editors cannot edit another member's work", () => {
   assert.equal(result.caps.view, true);
   assert.equal(result.caps.edit, false);
   assert.equal(result.version, false);
+  assert.equal(result.crosspost, false);
 });
 
 test("whole-server upload permission does not imply work edit permission", () => {
@@ -89,6 +90,7 @@ test("whole-server upload permission does not imply work edit permission", () =>
   assert.equal(result.caps.upload_work, true);
   assert.equal(result.caps.edit, false);
   assert.equal(result.version, false);
+  assert.equal(result.crosspost, false);
 });
 
 test("work authors, admins, and explicit work collaborators can still edit", () => {
@@ -115,6 +117,20 @@ test("explicit version collaborators can version without metadata edit rights", 
 
   assert.equal(result.caps.edit, false);
   assert.equal(result.version, true);
+  assert.equal(result.crosspost, true);
+});
+
+test("any explicit work collaborator can crosspost without edit rights", () => {
+  const result = resolveWorkCapabilities({
+    galleryCaps: uploadCaps,
+    work,
+    user: galleryEditor,
+    collaborator: { can_edit: 0, can_version: 0, can_comment: 0 },
+  });
+
+  assert.equal(result.caps.edit, false);
+  assert.equal(result.version, false);
+  assert.equal(result.crosspost, true);
 });
 
 let passed = 0;
