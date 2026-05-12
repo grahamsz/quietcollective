@@ -445,8 +445,9 @@ test("human-readable API docs are published through worker routes", () => {
   assert.match(developersPage, /redoc\.standalone\.js/);
 
   assert.match(workerRoutes, /app\.get\("\/api\/openapi\.yaml"[\s\S]*application\/yaml; charset=utf-8/);
-  assert.match(workerRoutes, /app\.get\("\/developers"[\s\S]*\/developers\.html[\s\S]*text\/html; charset=utf-8/);
-  assert.match(workerRoutes, /app\.get\("\/developers\/api"[\s\S]*\/developers\.html[\s\S]*text\/html; charset=utf-8/);
+  assert.match(workerRoutes, /app\.get\("\/developers"[\s\S]*\/developers\/[\s\S]*text\/html; charset=utf-8/);
+  assert.match(workerRoutes, /app\.get\("\/developers\.html"[\s\S]*\/developers\/[\s\S]*text\/html; charset=utf-8/);
+  assert.match(workerRoutes, /app\.get\("\/developers\/api"[\s\S]*\/developers\/[\s\S]*text\/html; charset=utf-8/);
 });
 
 test("wrangler config keeps R2 private by serving assets through the Worker API only", () => {

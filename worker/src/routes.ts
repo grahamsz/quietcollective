@@ -361,8 +361,9 @@ async function servePublicAsset(c: Ctx, pathname: string, contentType?: string) 
 }
 
 app.get("/api/openapi.yaml", async (c) => servePublicAsset(c, "/api/openapi.yaml", "application/yaml; charset=utf-8"));
-app.get("/developers", async (c) => servePublicAsset(c, "/developers.html", "text/html; charset=utf-8"));
-app.get("/developers/api", async (c) => servePublicAsset(c, "/developers.html", "text/html; charset=utf-8"));
+app.get("/developers", async (c) => servePublicAsset(c, "/developers/", "text/html; charset=utf-8"));
+app.get("/developers.html", async (c) => servePublicAsset(c, "/developers/", "text/html; charset=utf-8"));
+app.get("/developers/api", async (c) => servePublicAsset(c, "/developers/", "text/html; charset=utf-8"));
 
 app.get("/manifest.webmanifest", async (c) => {
   const instance = await instanceInfo(c.env);
