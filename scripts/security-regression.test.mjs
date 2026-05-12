@@ -453,8 +453,7 @@ test("wrangler config keeps R2 private by serving assets through the Worker API 
   const config = JSON.parse(wrangler.replace(/\/\/.*$/gm, ""));
   assert.equal(config.r2_buckets[0].bucket_name, "quietcollective-media");
   assert.ok(config.assets.run_worker_first.includes("/api/*"));
-  assert.ok(config.assets.run_worker_first.includes("/developers"));
-  assert.ok(config.assets.run_worker_first.includes("/developers/*"));
+  assert.ok(config.assets.run_worker_first.includes("/developers*"));
   assert.ok(config.assets.run_worker_first.includes("/manifest.webmanifest"));
 });
 
