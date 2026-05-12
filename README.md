@@ -109,4 +109,4 @@ npm run d1:migrations:apply:remote
 
 ## API Documentation
 
-Interactive API documentation is available from the static app at `/developers/` or `/developers.html`. The Redoc page renders `public/api/openapi.yaml`.
+Interactive API documentation is available at `/developers`, `/developers/api`, `/developers/`, or `/developers.html`. The Redoc page renders the published OpenAPI spec from `/api/openapi.yaml`.

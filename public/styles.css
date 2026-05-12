@@ -6,6 +6,7 @@
   --line: #2a2a2a;
   --line-strong: #444444;
   --media-boundary: rgba(255, 255, 255, 0.2);
+  --tile-boundary: rgba(222, 222, 218, 0.46);
   --paper: #090909;
   --panel: #141414;
   --panel-soft: #1c1c1c;
@@ -2084,12 +2085,22 @@ tr:last-child td {
   overflow: hidden;
   place-items: center;
   border: 0;
-  outline: 1px solid var(--media-boundary);
-  outline-offset: -1px;
+  outline: 0;
   border-radius: 2px;
   background: #1a1a1a;
   color: var(--ink);
   text-decoration: none;
+}
+
+.gallery-tile::after,
+.image-tile::after {
+  position: absolute;
+  z-index: 4;
+  inset: 0;
+  border: 1px solid var(--tile-boundary);
+  border-radius: inherit;
+  content: "";
+  pointer-events: none;
 }
 
 .gallery-tile img,

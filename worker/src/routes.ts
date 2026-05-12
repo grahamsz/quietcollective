@@ -345,7 +345,24 @@ app.use("/api/*", async (c, next) => {
 
 app.get("/api/health", (c) => c.json({ ok: true, service: "quietcollective" }));
 
-app.get("/api/openapi.yaml", async (c) => c.env.ASSETS.fetch(c.req.raw));
+function assetRequest(c: Ctx, pathname: string) {
+  const url = new URL(c.req.url);
+  url.pathname = pathname;
+  url.search = "";
+  return new Request(url, c.req.raw);
+}
+
+async function servePublicAsset(c: Ctx, pathname: string, contentType?: string) {
+  const response = await c.env.ASSETS.fetch(assetRequest(c, pathname));
+  if (!contentType || !response.ok) return response;
+  const nextResponse = new Response(response.body, response);
+  nextResponse.headers.set("Content-Type", contentType);
+  return nextResponse;
+}
+
+app.get("/api/openapi.yaml", async (c) => servePublicAsset(c, "/api/openapi.yaml", "application/yaml; charset=utf-8"));
+app.get("/developers", async (c) => servePublicAsset(c, "/developers.html", "text/html; charset=utf-8"));
+app.get("/developers/api", async (c) => servePublicAsset(c, "/developers.html", "text/html; charset=utf-8"));
 
 app.get("/manifest.webmanifest", async (c) => {
   const instance = await instanceInfo(c.env);

@@ -1,5 +1,5 @@
-const CACHE_NAME = "quietcollective-shell-24484878091d";
-const STYLES_CSS_URL = "/styles.css?v=b58a5483be59";
+const CACHE_NAME = "quietcollective-shell-e6215bf4b82e";
+const STYLES_CSS_URL = "/styles.css?v=2d8816497783";
 const APP_JS_URL = "/app.js?v=8ef77ce2a029";
 const MANIFEST_URL = "/manifest.webmanifest?v=7703ee8ba8cf";
 const NOTIFICATION_STATE_CACHE = "quietcollective-notification-state-v1";

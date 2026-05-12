@@ -30,6 +30,7 @@ const appSource = [
 ].map((file) => readFileSync(file, "utf8")).join("\n");
 const serviceWorker = readFileSync("public/sw.js", "utf8");
 const wrangler = readFileSync("wrangler.jsonc", "utf8");
+const developersPage = readFileSync("public/developers.html", "utf8");
 const checks = [];
 
 function test(name, fn) {
@@ -439,10 +440,21 @@ test("service worker does not cache API responses or original media", () => {
   assert.match(serviceWorker, /pathname\.includes\("high-resolution"\)/);
 });
 
+test("human-readable API docs are published through worker routes", () => {
+  assert.match(developersPage, /<redoc spec-url="\/api\/openapi\.yaml"><\/redoc>/);
+  assert.match(developersPage, /redoc\.standalone\.js/);
+
+  assert.match(workerRoutes, /app\.get\("\/api\/openapi\.yaml"[\s\S]*application\/yaml; charset=utf-8/);
+  assert.match(workerRoutes, /app\.get\("\/developers"[\s\S]*\/developers\.html[\s\S]*text\/html; charset=utf-8/);
+  assert.match(workerRoutes, /app\.get\("\/developers\/api"[\s\S]*\/developers\.html[\s\S]*text\/html; charset=utf-8/);
+});
+
 test("wrangler config keeps R2 private by serving assets through the Worker API only", () => {
   const config = JSON.parse(wrangler.replace(/\/\/.*$/gm, ""));
   assert.equal(config.r2_buckets[0].bucket_name, "quietcollective-media");
   assert.ok(config.assets.run_worker_first.includes("/api/*"));
+  assert.ok(config.assets.run_worker_first.includes("/developers"));
+  assert.ok(config.assets.run_worker_first.includes("/developers/*"));
   assert.ok(config.assets.run_worker_first.includes("/manifest.webmanifest"));
 });
 

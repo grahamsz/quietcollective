@@ -26,6 +26,14 @@ const serviceWorker = await readFile("public/sw.js", "utf8");
 if (!serviceWorker.includes("/api/") || !serviceWorker.includes("original")) {
   throw new Error("public/sw.js must avoid caching API and original media routes");
 }
+const developersPage = await readFile("public/developers.html", "utf8");
+if (!developersPage.includes('<redoc spec-url="/api/openapi.yaml"></redoc>')) {
+  throw new Error("public/developers.html must render the public OpenAPI spec with Redoc");
+}
+const developersIndex = await readFile("public/developers/index.html", "utf8");
+if (developersIndex !== developersPage) {
+  throw new Error("public/developers/index.html must match public/developers.html");
+}
 const index = await readFile("public/index.html", "utf8");
 if (!/<meta name="qc-build" content="[a-f0-9]{12}">/.test(index)) {
   throw new Error("public/index.html must include the build fingerprint meta tag");
