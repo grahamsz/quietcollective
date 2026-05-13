@@ -634,7 +634,7 @@ export function WorkVersionsView({ id, work, versions }) {
       <div class="grid">
         {(versions || []).length
           ? versions.map((version) => {
-            const thumb = version.preview_url || version.thumbnail_url || "";
+            const thumb = version.thumbnail_url || version.preview_url || "";
             return (
               <article class="version-card" key={version.id}>
                 {thumb ? <div class="version-thumb"><ProtectedImage src={thumb} alt={`Version ${version.version_number}`} /></div> : null}
