@@ -3,6 +3,7 @@ import { escapeHtml, navigate, pageShell, setApp, setRouteRenderer, state, updat
 import { renderAdmin, renderAdminInvites } from "./pages/admin";
 import { renderExports, renderMyProfile } from "./pages/account";
 import { renderGallery, renderGallerySettings, renderNewGallery } from "./pages/galleries";
+import { renderDiscussionBoard, renderDiscussions, renderDiscussionThread } from "./pages/forum";
 import { renderGalleries, renderHome, renderMemberProfile, renderMembers, renderTagPage } from "./pages/home";
 import { renderForcePasswordChange, renderForgotPassword, renderInvite, renderLogin, renderResetPassword, renderRulesAccept, renderSetup } from "./pages/auth";
 import { renderNotFound } from "./pages/not-found";
@@ -21,6 +22,9 @@ const routes = [
   ["/galleries/new", renderNewGallery],
   [/^\/galleries\/([^/]+)\/settings$/, renderGallerySettings],
   [/^\/galleries\/([^/]+)$/, renderGallery],
+  ["/discussions", renderDiscussions],
+  [/^\/discussions\/boards\/([^/]+)$/, renderDiscussionBoard],
+  [/^\/discussions\/threads\/([^/]+)$/, renderDiscussionThread],
   [/^\/works\/([^/]+)\/edit$/, renderWorkEdit],
   [/^\/works\/([^/]+)\/versions$/, renderWorkVersions],
   [/^\/works\/([^/]+)$/, renderWork],

@@ -35,6 +35,12 @@ export type ActivityJoinedRow = ActivityRow & {
   target_work_thumb_version_id: string | null;
   target_work_thumb_key: string | null;
   target_work_thumb_type: string | null;
+  target_thread_id: string | null;
+  target_thread_title: string | null;
+  target_thread_first_comment_id: string | null;
+  subject_thread_id: string | null;
+  subject_thread_title: string | null;
+  subject_thread_first_comment_id: string | null;
   target_version_id: string | null;
   target_version_work_id: string | null;
   target_version_work_title: string | null;
@@ -49,6 +55,8 @@ export type ActivityJoinedRow = ActivityRow & {
   comment_target_work_thumb_key: string | null;
   comment_target_work_thumb_type: string | null;
   comment_target_gallery_title: string | null;
+  comment_target_thread_id: string | null;
+  comment_target_thread_title: string | null;
   comment_target_version_id: string | null;
   comment_target_version_work_id: string | null;
   comment_target_version_work_title: string | null;
@@ -88,6 +96,12 @@ export const ACTIVITY_CONTEXT_SELECT = `
             target_work_version.id AS target_work_thumb_version_id,
             target_work_version.thumbnail_r2_key AS target_work_thumb_key,
             target_work_version.thumbnail_content_type AS target_work_thumb_type,
+            target_thread.id AS target_thread_id,
+            target_thread.title AS target_thread_title,
+            target_thread.first_comment_id AS target_thread_first_comment_id,
+            subject_thread.id AS subject_thread_id,
+            subject_thread.title AS subject_thread_title,
+            subject_thread.first_comment_id AS subject_thread_first_comment_id,
             target_version.id AS target_version_id,
             target_version.work_id AS target_version_work_id,
             target_version_work.title AS target_version_work_title,
@@ -102,6 +116,8 @@ export const ACTIVITY_CONTEXT_SELECT = `
             comment_target_work_version.thumbnail_r2_key AS comment_target_work_thumb_key,
             comment_target_work_version.thumbnail_content_type AS comment_target_work_thumb_type,
             comment_target_gallery.title AS comment_target_gallery_title,
+            comment_target_thread.id AS comment_target_thread_id,
+            comment_target_thread.title AS comment_target_thread_title,
             comment_target_version.id AS comment_target_version_id,
             comment_target_version.work_id AS comment_target_version_work_id,
             comment_target_version_work.title AS comment_target_version_work_title,
@@ -120,12 +136,16 @@ export const ACTIVITY_CONTEXT_SELECT = `
        AND subject_work.id = recent.subject_id
        AND subject_work.deleted_at IS NULL
      LEFT JOIN work_versions AS subject_work_version ON subject_work_version.id = subject_work.current_version_id
+     LEFT JOIN forum_threads AS subject_thread ON recent.subject_type = 'thread'
+       AND subject_thread.id = recent.subject_id
      LEFT JOIN galleries AS target_gallery ON recent.target_type = 'gallery'
        AND target_gallery.id = recent.target_id
      LEFT JOIN works AS target_work ON recent.target_type = 'work'
        AND target_work.id = recent.target_id
        AND target_work.deleted_at IS NULL
      LEFT JOIN work_versions AS target_work_version ON target_work_version.id = target_work.current_version_id
+     LEFT JOIN forum_threads AS target_thread ON recent.target_type = 'thread'
+       AND target_thread.id = recent.target_id
      LEFT JOIN work_versions AS target_version ON recent.target_type = 'version'
        AND target_version.id = recent.target_id
      LEFT JOIN works AS target_version_work ON target_version_work.id = target_version.work_id
@@ -139,6 +159,8 @@ export const ACTIVITY_CONTEXT_SELECT = `
      LEFT JOIN work_versions AS comment_target_work_version ON comment_target_work_version.id = comment_target_work.current_version_id
      LEFT JOIN galleries AS comment_target_gallery ON target_comment.target_type = 'gallery'
        AND comment_target_gallery.id = target_comment.target_id
+     LEFT JOIN forum_threads AS comment_target_thread ON target_comment.target_type = 'thread'
+       AND comment_target_thread.id = target_comment.target_id
      LEFT JOIN work_versions AS comment_target_version ON target_comment.target_type = 'version'
        AND comment_target_version.id = target_comment.target_id
      LEFT JOIN works AS comment_target_version_work ON comment_target_version_work.id = comment_target_version.work_id
@@ -226,11 +248,13 @@ export function collectActivityVisibilityIds(rows: ActivityJoinedRow[]) {
 function targetVisible(row: ActivityJoinedRow, visibleGalleries: Set<string>, visibleWorks: Set<string>) {
   if (row.target_type === "gallery") return !!row.target_id && visibleGalleries.has(row.target_id);
   if (row.target_type === "work") return !!row.target_work_id && visibleWorks.has(row.target_work_id);
+  if (row.target_type === "thread") return !!row.target_thread_id;
   if (row.target_type === "version") return !!row.target_version_work_id && visibleWorks.has(row.target_version_work_id);
   if (row.target_type === "profile") return !!row.target_profile_handle;
   if (row.target_type === "comment") {
     if (row.target_comment_target_type === "gallery") return !!row.target_comment_target_id && visibleGalleries.has(row.target_comment_target_id);
     if (row.target_comment_target_type === "work") return !!row.comment_target_work_id && visibleWorks.has(row.comment_target_work_id);
+    if (row.target_comment_target_type === "thread") return !!row.comment_target_thread_id;
     if (row.target_comment_target_type === "version") return !!row.comment_target_version_work_id && visibleWorks.has(row.comment_target_version_work_id);
     if (row.target_comment_target_type === "profile") return !!row.comment_target_profile_handle;
   }
@@ -251,6 +275,7 @@ export function joinedEventVisible(user: AuthenticatedUser, row: ActivityJoinedR
   if (row.subject_type === "profile") return true;
   if (row.subject_type === "gallery") return visibleGalleries.has(row.subject_id);
   if (row.subject_type === "work") return !!row.subject_work_id && visibleWorks.has(row.subject_work_id);
+  if (row.subject_type === "thread") return !!row.subject_thread_id;
   if (row.target_type && row.target_id) return targetVisible(row, visibleGalleries, visibleWorks);
   return false;
 }
@@ -334,10 +359,23 @@ export async function activityEntryFromJoinedRow(
       href = `/works/${row.target_version_work_id}#comment-${encodeURIComponent(row.subject_id)}`;
       thumbnail_url = await activityThumbnailUrl(env, thumbnailCache, row.target_version_thumb_key, row.target_version_thumb_type, row.target_version_work_id, row.target_version_id);
       summary = mentionedYou ? `${actorLabel} mentioned you on a version of "${row.target_version_work_title || "work"}"` : `${actorLabel} commented on a version of "${row.target_version_work_title || "work"}"`;
+    } else if (row.target_type === "thread" && row.target_thread_id) {
+      href = `/discussions/threads/${row.target_thread_id}#comment-${encodeURIComponent(row.subject_id)}`;
+      summary = mentionedYou ? `${actorLabel} mentioned you in "${row.target_thread_title || "thread"}"` : `${actorLabel} replied to "${row.target_thread_title || "thread"}"`;
     } else if (mentionedYou) {
       summary = `${actorLabel} mentioned you`;
     }
-    if (row.type === "comment.replied" && !mentionedYou) summary = `${actorLabel} replied to a comment`;
+    if (row.type === "comment.replied" && !mentionedYou) {
+      summary = row.target_type === "thread" && row.target_thread_id
+        ? `${actorLabel} replied in "${row.target_thread_title || "thread"}"`
+        : `${actorLabel} replied to a comment`;
+    }
+  } else if (row.type === "thread.created") {
+    const body = typeof payload.body === "string" ? payload.body : "";
+    comment_preview = stripMarkdownImages(body).slice(0, 360);
+    const commentHash = row.subject_thread_first_comment_id ? `#comment-${encodeURIComponent(row.subject_thread_first_comment_id)}` : "";
+    href = row.subject_thread_id ? `/discussions/threads/${row.subject_thread_id}${commentHash}` : null;
+    summary = `${actorLabel} started "${row.subject_thread_title || "thread"}"`;
   } else if (row.type === "reaction.created") {
     const targetType = String(payload.target_type || row.target_type || "");
     if (targetType === "work" && row.target_work_id) {
@@ -356,6 +394,7 @@ export async function activityEntryFromJoinedRow(
         thumbnail_url = await activityThumbnailUrl(env, thumbnailCache, row.comment_target_work_thumb_key, row.comment_target_work_thumb_type, row.comment_target_work_id, row.comment_target_work_thumb_version_id);
       }
       if (row.target_comment_target_type === "gallery" && row.target_comment_target_id) href = `/galleries/${row.target_comment_target_id}${commentHash}`;
+      if (row.target_comment_target_type === "thread" && row.comment_target_thread_id) href = `/discussions/threads/${row.comment_target_thread_id}${commentHash}`;
       if (row.target_comment_target_type === "profile" && row.comment_target_profile_handle) href = `/members/${row.comment_target_profile_handle}${commentHash}`;
       if (row.target_comment_target_type === "version" && row.comment_target_version_work_id) {
         href = `/works/${row.comment_target_version_work_id}${commentHash}`;

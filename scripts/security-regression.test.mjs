@@ -27,6 +27,7 @@ const workPrefetchSource = readFileSync("web/src/app/work-prefetch.ts", "utf8");
 const installSource = readFileSync("web/src/app/install.ts", "utf8");
 const workTileSource = readFileSync("web/src/components/work-tile.tsx", "utf8");
 const workViewSource = readFileSync("web/src/views/works.tsx", "utf8");
+const forumPageSource = readFileSync("web/src/pages/forum.ts", "utf8");
 const utilsSource = readFileSync("worker/src/utils.ts", "utf8");
 const fontFacesSource = readFileSync("public/font-faces.css", "utf8");
 const stylesSource = readFileSync("public/styles.css", "utf8");
@@ -44,9 +45,11 @@ const appSource = [
   "web/src/app/notifications.ts",
   "web/src/app/comments.ts",
   "web/src/app/interactions.ts",
+  "web/src/pages/forum.ts",
   "web/src/pages/galleries.ts",
   "web/src/pages/home.ts",
   "web/src/pages/works.ts",
+  "web/src/views/forum.tsx",
   "web/src/views/galleries.tsx",
   "web/src/views/islands.ts",
 ].map((file) => readFileSync(file, "utf8")).join("\n");
@@ -55,6 +58,7 @@ const wrangler = readFileSync("wrangler.jsonc", "utf8");
 const developersPage = readFileSync("public/developers.html", "utf8");
 const indexPage = readFileSync("public/index.html", "utf8");
 const robotsTxt = readFileSync("public/robots.txt", "utf8");
+const forumMigration = readFileSync("migrations/0019_forum_boards_threads.sql", "utf8");
 const checks = [];
 
 function test(name, fn) {
@@ -84,6 +88,8 @@ test("protected API route groups require authentication", () => {
     "/api/works/*",
     "/api/role-suggestions",
     "/api/reactions/*",
+    "/api/forum",
+    "/api/forum/*",
     "/api/markdown-assets",
     "/api/comments",
     "/api/comments/*",
@@ -125,6 +131,36 @@ test("comment writes and reactions require view/comment capability before insert
   assert.match(reactions, /targetType !== "gallery"/);
   assert.ok(reactions.indexOf("canViewTarget") < reactions.indexOf("INSERT OR IGNORE INTO reactions"));
   assert.ok(reactions.indexOf("canViewTarget") < reactions.indexOf("insertEvent"));
+});
+
+test("forum boards and threads reuse comments, mentions, and activity targets", () => {
+  assert.match(forumMigration, /CREATE TABLE IF NOT EXISTS forum_boards/);
+  assert.match(forumMigration, /CREATE TABLE IF NOT EXISTS forum_threads/);
+  assert.match(forumMigration, /target_type IN \('profile', 'gallery', 'work', 'version', 'comment', 'thread'\)/);
+
+  const targetAccess = sourceBlock(workerEntry, "async function canViewTarget", "async function canCommentTarget");
+  const commentAccess = sourceBlock(workerEntry, "async function canCommentTarget", "async function canUserViewTarget");
+  assert.match(targetAccess, /targetType === "thread"/);
+  assert.match(commentAccess, /targetType === "thread"/);
+
+  const boardCreate = routeBlock('app.post("/api/forum/boards"', 'app.patch("/api/forum/boards/:id"');
+  assert.match(boardCreate, /user\.role !== "admin"/);
+  assert.match(boardCreate, /INSERT INTO forum_boards/);
+
+  const threadCreate = routeBlock('app.post("/api/forum/boards/:id/threads"', 'app.get("/api/forum/threads/:id"');
+  assert.match(threadCreate, /INSERT INTO forum_threads/);
+  assert.match(threadCreate, /INSERT INTO comments[\s\S]*'thread'/);
+  assert.match(threadCreate, /reindexCommentTags/);
+  assert.match(threadCreate, /insertEvent\(c\.env, "thread\.created"/);
+
+  const comments = routeBlock('app.post("/api/comments"', 'async function commentsForTarget');
+  assert.match(comments, /targetType === "thread"/);
+  assert.match(comments, /UPDATE forum_threads/);
+
+  assert.match(activitySource, /row\.type === "thread\.created"/);
+  assert.match(activitySource, /\/discussions\/threads\/\$\{row\.target_thread_id\}/);
+  assert.match(forumPageSource, /bindCommentForm\("thread", id\)/);
+  assert.match(appSource, /commentsPanel\("thread"/);
 });
 
 test("notifications use the joined activity context instead of the old N+1 formatter", () => {

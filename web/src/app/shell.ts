@@ -56,6 +56,10 @@ function pageShell(content, options = {}) {
           <a href="/galleries" class="sidebar-view-all" data-link>View All</a>
           <a href="/galleries/new" class="sidebar-new-gallery" data-link><span>${icon("plus")}</span><strong>New Gallery</strong></a>
         </section>
+        <section class="sidebar-section sidebar-community">
+          <h2>Community</h2>
+          <nav class="admin-nav" aria-label="Community"><a href="/discussions" ${location.pathname.startsWith("/discussions") ? 'aria-current="page"' : ""} data-link>${icon("quote")}<span>Discussions</span></a></nav>
+        </section>
         ${popularTags.length ? `<section class="sidebar-section sidebar-tags"><h2>Popular Tags</h2><div class="sidebar-tag-list">${popularTags.map((tag) => `<a href="/tags/${encodePath(tag.tag)}" data-link><span>#${escapeHtml(tag.tag)}</span><small>${escapeHtml(String(tag.count || 0))}</small></a>`).join("")}</div></section>` : ""}
         <div class="sidebar-foot">
           ${installButton()}

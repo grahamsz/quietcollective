@@ -2126,6 +2126,10 @@ body.media-lightbox-open {
   border-top: 1px solid var(--line);
 }
 
+.sidebar-community {
+  border-top: 1px solid var(--line);
+}
+
 .sidebar-tag-list {
   display: grid;
   gap: 2px;
@@ -2956,6 +2960,34 @@ body.media-lightbox-open {
   height: 28px;
   border-radius: 2px;
   object-fit: cover;
+}
+
+.forum-view {
+  gap: 15px;
+}
+
+.forum-board-card {
+  align-content: start;
+}
+
+.forum-thread-row {
+  grid-template-columns: 58px minmax(0, 1fr) auto;
+}
+
+.forum-thread-meta {
+  display: inline-grid;
+  min-width: 24px;
+  height: 24px;
+  place-items: center;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  color: var(--muted);
+  font-size: 0.7rem;
+  font-weight: 900;
+}
+
+.forum-board-form .compact-field {
+  max-width: 140px;
 }
 
 .member-rail {

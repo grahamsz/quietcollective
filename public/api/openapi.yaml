@@ -239,7 +239,7 @@ components:
           type: string
         target_type:
           type: string
-          enum: [profile, gallery, work, version, comment]
+          enum: [profile, gallery, work, version, comment, thread]
         target_id:
           type: string
         parent_comment_id:
@@ -252,6 +252,68 @@ components:
           type: string
         reactions:
           $ref: "#/components/schemas/ReactionSummary"
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+
+    ForumBoard:
+      type: object
+      required: [id, slug, title, description, thread_count, created_at, updated_at]
+      properties:
+        id:
+          type: string
+        slug:
+          type: string
+        title:
+          type: string
+        description:
+          type: string
+        sort_order:
+          type: integer
+        thread_count:
+          type: integer
+        latest_thread_at:
+          type: [string, "null"]
+          format: date-time
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+
+    ForumThread:
+      type: object
+      required: [id, board_id, title, author_id, last_comment_at, comment_count, created_at, updated_at]
+      properties:
+        id:
+          type: string
+        board_id:
+          type: string
+        board_slug:
+          type: string
+        board_title:
+          type: string
+        title:
+          type: string
+        author_id:
+          type: string
+        author_handle:
+          type: [string, "null"]
+        first_comment_id:
+          type: [string, "null"]
+        preview:
+          type: string
+        last_comment_preview:
+          type: string
+        last_comment_at:
+          type: string
+          format: date-time
+        comment_count:
+          type: integer
         created_at:
           type: string
           format: date-time
@@ -753,6 +815,100 @@ paths:
         "201":
           description: Version created.
 
+  /api/forum/boards:
+    get:
+      summary: List discussion boards
+      responses:
+        "200":
+          description: Boards and recent threads.
+        "304":
+          $ref: "#/components/responses/NotModified"
+    post:
+      summary: Create a discussion board
+      description: Admin-only.
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [title]
+              properties:
+                title:
+                  type: string
+                slug:
+                  type: string
+                description:
+                  type: string
+                sort_order:
+                  type: integer
+      responses:
+        "201":
+          description: Board created.
+        "403":
+          $ref: "#/components/responses/Forbidden"
+
+  /api/forum/boards/{idOrSlug}:
+    get:
+      summary: Get a discussion board with threads
+      parameters:
+        - name: idOrSlug
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Board and threads.
+        "304":
+          $ref: "#/components/responses/NotModified"
+    patch:
+      summary: Update a discussion board
+      description: Admin-only.
+      parameters:
+        - name: idOrSlug
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Board updated.
+        "403":
+          $ref: "#/components/responses/Forbidden"
+
+  /api/forum/boards/{id}/threads:
+    post:
+      summary: Create a discussion thread in a board
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [title, body]
+              properties:
+                title:
+                  type: string
+                body:
+                  type: string
+      responses:
+        "201":
+          description: Thread and opening comment created.
+
+  /api/forum/threads/{id}:
+    get:
+      summary: Get a discussion thread
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Thread, board, and comments.
+        "304":
+          $ref: "#/components/responses/NotModified"
+
   /api/comments:
     get:
       summary: List comments for a visible target
@@ -762,7 +918,7 @@ paths:
           required: true
           schema:
             type: string
-            enum: [profile, gallery, work, version, comment]
+            enum: [profile, gallery, work, version, comment, thread]
         - name: target_id
           in: query
           required: true

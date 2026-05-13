@@ -91,6 +91,21 @@ export function tagPageView(data) {
   return islandPlaceholder("tag-page-view", { data, commentsHtml });
 }
 
+/** Mounts the discussions index route. */
+export function discussionsIndexView({ boards, recentThreads, isAdmin }) {
+  return islandPlaceholder("discussions-index-view", { boards, recentThreads, isAdmin });
+}
+
+/** Mounts one forum board route. */
+export function discussionBoardView({ board, threads, isAdmin }) {
+  return islandPlaceholder("discussion-board-view", { board, threads, isAdmin });
+}
+
+/** Mounts one forum thread route. */
+export function discussionThreadView({ board, thread, comments }) {
+  return islandPlaceholder("discussion-thread-view", { board, thread, commentsHtml: commentsPanel("thread", thread.id, comments) });
+}
+
 /** Mounts the setup-disabled auth view. */
 export function setupDisabledView() {
   return islandPlaceholder("setup-disabled-view", {});

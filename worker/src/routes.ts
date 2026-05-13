@@ -41,7 +41,7 @@ import {
   ROLE_SUGGESTIONS,
 } from "./constants";
 import type { AppUser, AuthenticatedUser, Env, GalleryCapabilities, GalleryRow, WorkRow, WorkVersionRow } from "./types";
-import { cacheControl, fileField, jsonText, normalizeClientUploadKey, normalizeGalleryOwnership, normalizeHandle, normalizeRoleLabel, normalizeTag, now, numberField, parseJson, recordTagUse, recordTextTags, stringField, truthy } from "./utils";
+import { cacheControl, fileField, jsonText, normalizeClientUploadKey, normalizeGalleryOwnership, normalizeHandle, normalizeRoleLabel, normalizeTag, now, numberField, parseJson, recordTagUse, recordTextTags, stringField, stripMarkdownImages, truthy } from "./utils";
 import type { RouteApp, RouteDeps } from "./routes/types";
 
 type WorkCollaboratorInput = Record<string, unknown>;
@@ -114,6 +114,142 @@ function escapeHtml(value: string) {
 
 function sqlPlaceholders(values: unknown[]) {
   return values.map(() => "?").join(",");
+}
+
+type ForumBoardRow = {
+  id: string;
+  slug: string;
+  title: string;
+  description: string;
+  sort_order: number;
+  created_by: string;
+  created_by_handle?: string | null;
+  created_at: string;
+  updated_at: string;
+  thread_count?: number | null;
+  latest_thread_at?: string | null;
+};
+
+type ForumThreadRow = {
+  id: string;
+  board_id: string;
+  board_slug: string;
+  board_title: string;
+  title: string;
+  author_id: string;
+  author_handle: string | null;
+  first_comment_id: string | null;
+  first_comment_body: string | null;
+  last_comment_body: string | null;
+  last_comment_author_handle: string | null;
+  last_comment_at: string;
+  comment_count: number;
+  created_at: string;
+  updated_at: string;
+};
+
+function normalizeForumSlug(value: unknown) {
+  return stringField(value).toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 70);
+}
+
+function forumCommentPreview(value: string | null | undefined, length = 180) {
+  return stripMarkdownImages(value || "").replace(/\s+/g, " ").trim().slice(0, length);
+}
+
+function serializeForumBoard(board: ForumBoardRow) {
+  return {
+    ...board,
+    sort_order: Number(board.sort_order || 0),
+    thread_count: Number(board.thread_count || 0),
+    latest_thread_at: board.latest_thread_at || null,
+    created_by_handle: board.created_by_handle || null,
+  };
+}
+
+function serializeForumThread(thread: ForumThreadRow) {
+  return {
+    ...thread,
+    comment_count: Number(thread.comment_count || 0),
+    preview: forumCommentPreview(thread.first_comment_body),
+    last_comment_preview: forumCommentPreview(thread.last_comment_body),
+    author_handle: thread.author_handle || null,
+    last_comment_author_handle: thread.last_comment_author_handle || null,
+  };
+}
+
+async function forumBoardByIdOrSlug(db: D1Database, idOrSlug: string) {
+  return db.prepare(
+    `SELECT forum_boards.*, users.handle AS created_by_handle,
+            COUNT(forum_threads.id) AS thread_count,
+            MAX(forum_threads.last_comment_at) AS latest_thread_at
+     FROM forum_boards
+     JOIN users ON users.id = forum_boards.created_by
+     LEFT JOIN forum_threads ON forum_threads.board_id = forum_boards.id
+     WHERE forum_boards.id = ? OR forum_boards.slug = ?
+     GROUP BY forum_boards.id`,
+  ).bind(idOrSlug, normalizeForumSlug(idOrSlug)).first<ForumBoardRow>();
+}
+
+async function forumBoards(db: D1Database) {
+  const rows = await db.prepare(
+    `SELECT forum_boards.*, users.handle AS created_by_handle,
+            COUNT(forum_threads.id) AS thread_count,
+            MAX(forum_threads.last_comment_at) AS latest_thread_at
+     FROM forum_boards
+     JOIN users ON users.id = forum_boards.created_by
+     LEFT JOIN forum_threads ON forum_threads.board_id = forum_boards.id
+     GROUP BY forum_boards.id
+     ORDER BY forum_boards.sort_order ASC, forum_boards.title COLLATE NOCASE ASC`,
+  ).all<ForumBoardRow>();
+  return rows.results.map(serializeForumBoard);
+}
+
+async function forumThreadRows(c: Ctx, whereSql = "1 = 1", args: unknown[] = [], limit = 30) {
+  const rows = await c.env.DB.prepare(
+    `SELECT forum_threads.*,
+            forum_boards.slug AS board_slug,
+            forum_boards.title AS board_title,
+            author.handle AS author_handle,
+            first_comment.body AS first_comment_body,
+            last_comment.body AS last_comment_body,
+            last_author.handle AS last_comment_author_handle
+     FROM forum_threads
+     JOIN forum_boards ON forum_boards.id = forum_threads.board_id
+     JOIN users AS author ON author.id = forum_threads.author_id
+     LEFT JOIN comments AS first_comment ON first_comment.id = forum_threads.first_comment_id
+     LEFT JOIN comments AS last_comment ON last_comment.id = (
+       SELECT id FROM comments
+       WHERE target_type = 'thread'
+         AND target_id = forum_threads.id
+         AND deleted_at IS NULL
+       ORDER BY created_at DESC
+       LIMIT 1
+     )
+     LEFT JOIN users AS last_author ON last_author.id = last_comment.author_id
+     WHERE ${whereSql}
+     ORDER BY forum_threads.last_comment_at DESC
+     LIMIT ?`,
+  ).bind(...args, limit).all<ForumThreadRow>();
+  return rows.results.map(serializeForumThread);
+}
+
+async function refreshForumThreadStats(db: D1Database, threadId: string) {
+  const stats = await db.prepare(
+    `SELECT COUNT(*) AS comment_count,
+            MAX(created_at) AS last_comment_at
+     FROM comments
+     WHERE target_type = 'thread'
+       AND target_id = ?
+       AND deleted_at IS NULL`,
+  ).bind(threadId).first<{ comment_count: number; last_comment_at: string | null }>();
+  const timestamp = now();
+  await db.prepare(
+    `UPDATE forum_threads
+     SET comment_count = ?,
+         last_comment_at = COALESCE(?, last_comment_at),
+         updated_at = ?
+     WHERE id = ?`,
+  ).bind(Number(stats?.comment_count || 0), stats?.last_comment_at || null, timestamp, threadId).run();
 }
 
 function simpleMarkdownToHtml(value: string) {
@@ -688,6 +824,8 @@ app.use("/api/works/*", requireUser);
 app.use("/api/role-suggestions", requireUser);
 app.use("/api/reactions/*", requireUser);
 app.use("/api/markdown-assets", requireUser);
+app.use("/api/forum", requireUser);
+app.use("/api/forum/*", requireUser);
 app.use("/api/comments", requireUser);
 app.use("/api/comments/*", requireUser);
 app.use("/api/activity", requireUser);
@@ -2322,6 +2460,113 @@ app.delete("/api/works/:id/collaborators/:collaboratorId", async (c) => {
   return c.json({ ok: true });
 });
 
+app.get("/api/forum/boards", async (c) => {
+  const cache = await prepareApiCache(c, "forum:boards");
+  if (cache.fresh) return apiNotModified(cache);
+  const [boards, recentThreads] = await Promise.all([
+    forumBoards(c.env.DB),
+    forumThreadRows(c, "1 = 1", [], 20),
+  ]);
+  return cacheableJson(c, cache, { boards, recent_threads: recentThreads });
+});
+
+app.post("/api/forum/boards", async (c) => {
+  const user = currentUser(c);
+  if (user.role !== "admin") return c.json({ error: "Forbidden" }, 403);
+  const body = await readBody(c);
+  const title = stringField(body.title).slice(0, 160);
+  const description = stringField(body.description).slice(0, 2000);
+  const slug = normalizeForumSlug(body.slug || title);
+  if (!title) return c.json({ error: "Title is required" }, 400);
+  if (!slug) return c.json({ error: "Slug is required" }, 400);
+  const duplicate = await c.env.DB.prepare("SELECT id FROM forum_boards WHERE slug = ?").bind(slug).first<{ id: string }>();
+  if (duplicate) return c.json({ error: "That board slug is already in use" }, 400);
+  const id = ulid();
+  const timestamp = now();
+  const sortOrder = Math.floor(numberField(body.sort_order ?? body.sortOrder, 0));
+  await c.env.DB.prepare(
+    `INSERT INTO forum_boards (id, slug, title, description, sort_order, created_by, created_at, updated_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+  ).bind(id, slug, title, description, sortOrder, user.id, timestamp, timestamp).run();
+  return c.json({ board: serializeForumBoard((await forumBoardByIdOrSlug(c.env.DB, id))!) }, 201);
+});
+
+app.patch("/api/forum/boards/:id", async (c) => {
+  const user = currentUser(c);
+  if (user.role !== "admin") return c.json({ error: "Forbidden" }, 403);
+  const existing = await forumBoardByIdOrSlug(c.env.DB, c.req.param("id"));
+  if (!existing) return c.json({ error: "Not found" }, 404);
+  const body = await readBody(c);
+  const title = body.title == null ? existing.title : stringField(body.title).slice(0, 160);
+  const description = body.description == null ? existing.description : stringField(body.description).slice(0, 2000);
+  const slug = body.slug == null ? existing.slug : normalizeForumSlug(body.slug);
+  const sortOrder = body.sort_order == null && body.sortOrder == null ? existing.sort_order : Math.floor(numberField(body.sort_order ?? body.sortOrder, existing.sort_order));
+  if (!title) return c.json({ error: "Title is required" }, 400);
+  if (!slug) return c.json({ error: "Slug is required" }, 400);
+  const duplicate = await c.env.DB.prepare("SELECT id FROM forum_boards WHERE slug = ? AND id <> ?").bind(slug, existing.id).first<{ id: string }>();
+  if (duplicate) return c.json({ error: "That board slug is already in use" }, 400);
+  await c.env.DB.prepare(
+    `UPDATE forum_boards
+     SET slug = ?, title = ?, description = ?, sort_order = ?, updated_at = ?
+     WHERE id = ?`,
+  ).bind(slug, title, description, sortOrder, now(), existing.id).run();
+  return c.json({ board: serializeForumBoard((await forumBoardByIdOrSlug(c.env.DB, existing.id))!) });
+});
+
+app.get("/api/forum/boards/:idOrSlug", async (c) => {
+  const board = await forumBoardByIdOrSlug(c.env.DB, c.req.param("idOrSlug"));
+  if (!board) return c.json({ error: "Not found" }, 404);
+  const cache = await prepareApiCache(c, `forum:board:${board.id}`);
+  if (cache.fresh) return apiNotModified(cache);
+  const threads = await forumThreadRows(c, "forum_threads.board_id = ?", [board.id], 60);
+  return cacheableJson(c, cache, { board: serializeForumBoard(board), threads });
+});
+
+app.post("/api/forum/boards/:id/threads", async (c) => {
+  const user = currentUser(c);
+  const board = await forumBoardByIdOrSlug(c.env.DB, c.req.param("id"));
+  if (!board) return c.json({ error: "Not found" }, 404);
+  const body = await readBody(c);
+  const title = stringField(body.title).slice(0, 180);
+  const commentBody = stringField(body.body);
+  if (!title) return c.json({ error: "Title is required" }, 400);
+  if (!commentBody) return c.json({ error: "Post body is required" }, 400);
+  const threadId = ulid();
+  const commentId = ulid();
+  const timestamp = now();
+  await c.env.DB.batch([
+    c.env.DB.prepare(
+      `INSERT INTO forum_threads (id, board_id, title, author_id, first_comment_id, last_comment_at, comment_count, created_at, updated_at)
+       VALUES (?, ?, ?, ?, NULL, ?, 0, ?, ?)`,
+    ).bind(threadId, board.id, title, user.id, timestamp, timestamp, timestamp),
+    c.env.DB.prepare(
+      `INSERT INTO comments (id, target_type, target_id, parent_comment_id, author_id, body, created_at, updated_at)
+       VALUES (?, 'thread', ?, NULL, ?, ?, ?, ?)`,
+    ).bind(commentId, threadId, user.id, commentBody, timestamp, timestamp),
+    c.env.DB.prepare(
+      `UPDATE forum_threads
+       SET first_comment_id = ?, comment_count = 1
+       WHERE id = ?`,
+    ).bind(commentId, threadId),
+  ]);
+  await reindexCommentTags(c.env.DB, commentId, { id: commentId, body: commentBody, updated_at: timestamp, deleted_at: null });
+  await insertEvent(c.env, "thread.created", user.id, "thread", threadId, "thread", threadId, { board_id: board.id, title, body: commentBody, first_comment_id: commentId });
+  const thread = (await forumThreadRows(c, "forum_threads.id = ?", [threadId], 1))[0];
+  return c.json({ thread, first_comment_id: commentId }, 201);
+});
+
+app.get("/api/forum/threads/:id", async (c) => {
+  const thread = (await forumThreadRows(c, "forum_threads.id = ?", [c.req.param("id")], 1))[0];
+  if (!thread) return c.json({ error: "Not found" }, 404);
+  const cache = await prepareApiCache(c, `forum:thread:${thread.id}`);
+  if (cache.fresh) return apiNotModified(cache);
+  return cacheableJson(c, cache, {
+    thread,
+    board: serializeForumBoard((await forumBoardByIdOrSlug(c.env.DB, thread.board_id))!),
+    comments: await commentsForTarget(c, currentUser(c), "thread", thread.id),
+  });
+});
+
 app.post("/api/comments", async (c) => {
   const user = currentUser(c);
   const body = await readBody(c);
@@ -2336,6 +2581,15 @@ app.post("/api/comments", async (c) => {
     `INSERT INTO comments (id, target_type, target_id, parent_comment_id, author_id, body, created_at, updated_at)
      VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
   ).bind(id, targetType, targetId, parentId, user.id, commentBody, timestamp, timestamp).run();
+  if (targetType === "thread") {
+    await c.env.DB.prepare(
+      `UPDATE forum_threads
+       SET comment_count = comment_count + 1,
+           last_comment_at = ?,
+           updated_at = ?
+       WHERE id = ?`,
+    ).bind(timestamp, timestamp, targetId).run();
+  }
   await reindexCommentTags(c.env.DB, id, { id, body: commentBody, updated_at: timestamp, deleted_at: null });
   const feedbackCleared = await clearFeedbackRequestForCommentTarget(c.env.DB, targetType, targetId);
   const eventType = parentId ? "comment.replied" : "comment.created";
@@ -2452,6 +2706,7 @@ async function legacyPopularTagsForUser(c: Ctx, user: AuthenticatedUser) {
            target_type = 'profile'
            OR (target_type = 'gallery' AND EXISTS (SELECT 1 FROM galleries WHERE galleries.id = comments.target_id AND ${tagVisibleGallerySql("galleries")}))
            OR (target_type = 'work' AND EXISTS (SELECT 1 FROM works WHERE works.id = comments.target_id AND works.deleted_at IS NULL AND ${tagVisibleWorkSql("works")}))
+           OR (target_type = 'thread' AND EXISTS (SELECT 1 FROM forum_threads WHERE forum_threads.id = comments.target_id))
          )
        ORDER BY created_at DESC
        LIMIT 240`,
@@ -2508,6 +2763,7 @@ async function indexedPopularTagsForUser(c: Ctx, user: AuthenticatedUser) {
            comments.target_type = 'profile'
            OR (comments.target_type = 'gallery' AND EXISTS (SELECT 1 FROM galleries WHERE galleries.id = comments.target_id AND ${tagVisibleGallerySql("galleries")}))
            OR (comments.target_type = 'work' AND EXISTS (SELECT 1 FROM works WHERE works.id = comments.target_id AND works.deleted_at IS NULL AND ${tagVisibleWorkSql("works")}))
+           OR (comments.target_type = 'thread' AND EXISTS (SELECT 1 FROM forum_threads WHERE forum_threads.id = comments.target_id))
          )
 
        UNION ALL
@@ -2594,6 +2850,7 @@ async function visibleTargetKeysForUser(c: Ctx, user: AuthenticatedUser, targets
   const workIds = new Set<string>();
   const versionIds = new Set<string>();
   const commentIds = new Set<string>();
+  const threadIds = new Set<string>();
 
   for (const target of targets) {
     const targetId = stringField(target.target_id);
@@ -2603,6 +2860,7 @@ async function visibleTargetKeysForUser(c: Ctx, user: AuthenticatedUser, targets
     if (target.target_type === "work") workIds.add(targetId);
     if (target.target_type === "version") versionIds.add(targetId);
     if (target.target_type === "comment") commentIds.add(targetId);
+    if (target.target_type === "thread") threadIds.add(targetId);
   }
 
   await Promise.all([
@@ -2636,6 +2894,16 @@ async function visibleTargetKeysForUser(c: Ctx, user: AuthenticatedUser, targets
       for (const row of rows.results) {
         if (visibleWorks.has(row.work_id)) visible.add(targetKey("version", row.id));
       }
+    })(),
+    (async () => {
+      if (!threadIds.size) return;
+      const ids = [...threadIds];
+      const rows = await c.env.DB.prepare(
+        `SELECT id
+         FROM forum_threads
+         WHERE id IN (${sqlPlaceholders(ids)})`,
+      ).bind(...ids).all<{ id: string }>();
+      for (const row of rows.results) visible.add(targetKey("thread", row.id));
     })(),
   ]);
 
@@ -2860,11 +3128,12 @@ app.patch("/api/comments/:id", async (c) => {
 
 app.delete("/api/comments/:id", async (c) => {
   const user = currentUser(c);
-  const comment = await c.env.DB.prepare("SELECT author_id FROM comments WHERE id = ? AND deleted_at IS NULL").bind(c.req.param("id")).first<{ author_id: string }>();
+  const comment = await c.env.DB.prepare("SELECT author_id, target_type, target_id FROM comments WHERE id = ? AND deleted_at IS NULL").bind(c.req.param("id")).first<{ author_id: string; target_type: string; target_id: string }>();
   if (!comment) return c.json({ error: "Not found" }, 404);
   if (comment.author_id !== user.id) return c.json({ error: "Forbidden" }, 403);
   await c.env.DB.prepare("UPDATE comments SET deleted_at = ?, updated_at = ? WHERE id = ?").bind(now(), now(), c.req.param("id")).run();
   await removeTagIndexForTarget(c.env.DB, "comment", c.req.param("id"));
+  if (comment.target_type === "thread") await refreshForumThreadStats(c.env.DB, comment.target_id);
   return c.json({ ok: true });
 });
 

@@ -547,6 +547,14 @@ async function canViewTarget(db: D1Database, user: AuthenticatedUser, targetType
     const row = await db.prepare("SELECT target_type, target_id FROM comments WHERE id = ? AND deleted_at IS NULL").bind(targetId).first<{ target_type: string; target_id: string }>();
     return row ? canViewTarget(db, user, row.target_type, row.target_id) : false;
   }
+  if (targetType === "thread") {
+    return !!(await db.prepare(
+      `SELECT forum_threads.id
+       FROM forum_threads
+       JOIN forum_boards ON forum_boards.id = forum_threads.board_id
+       WHERE forum_threads.id = ?`,
+    ).bind(targetId).first<{ id: string }>());
+  }
   return false;
 }
 
@@ -559,6 +567,7 @@ async function canCommentTarget(db: D1Database, user: AuthenticatedUser, targetT
     return row ? (await workCapabilities(db, user, row.work_id)).caps.comment : false;
   }
   if (targetType === "comment") return canViewTarget(db, user, targetType, targetId);
+  if (targetType === "thread") return canViewTarget(db, user, targetType, targetId);
   return false;
 }
 
@@ -708,6 +717,14 @@ async function processEvent(env: Env, eventId: string) {
     }
   }
 
+  if (event.type === "comment.created" && event.target_type === "thread" && event.target_id) {
+    const thread = await env.DB.prepare("SELECT author_id, title FROM forum_threads WHERE id = ?").bind(event.target_id).first<{ author_id: string; title: string }>();
+    if (thread) {
+      targets.add(thread.author_id);
+      body = `New reply to "${thread.title}"`;
+    }
+  }
+
   if (event.type === "comment.replied") {
     const parentId = String(payload.parent_comment_id || "");
     const parent = await env.DB.prepare("SELECT author_id FROM comments WHERE id = ?").bind(parentId).first<{ author_id: string }>();
@@ -715,7 +732,7 @@ async function processEvent(env: Env, eventId: string) {
     body = "New reply to your comment";
   }
 
-  if ((event.type === "comment.created" || event.type === "comment.replied") && typeof payload.body === "string") {
+  if ((event.type === "comment.created" || event.type === "comment.replied" || event.type === "thread.created") && typeof payload.body === "string") {
     const handles = extractMentions(payload.body);
     if (handles.length) {
       const placeholders = handles.map(() => "?").join(",");
@@ -725,7 +742,7 @@ async function processEvent(env: Env, eventId: string) {
       for (const row of mentioned.results) {
         if (await canUserViewTarget(env.DB, row.id, event.target_type, event.target_id)) targets.add(row.id);
       }
-      body = "You were mentioned in a comment";
+      body = event.type === "thread.created" ? "You were mentioned in a thread" : "You were mentioned in a comment";
     }
   }
 
