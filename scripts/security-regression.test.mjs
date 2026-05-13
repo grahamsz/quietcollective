@@ -576,7 +576,7 @@ test("protected media opens a swipeable gallery lightbox", () => {
   assert.match(workViewSource, /lightboxContext\?\.type === "profile"/);
   assert.match(workViewSource, /mergeCreditRole\(credits\[index\], collab\?\.role_label \|\| "contributor"\)/);
   assert.match(workViewSource, /<WorkCreditChips work=\{work\} collaborators=\{collaborators \|\| \[\]\} \/>[\s\S]*<GalleryAccessChips gallery=\{gallery\} className="is-inline" kinds=\{\["view"\]\} \/>/);
-  assert.match(workViewSource, /version\.thumbnail_url \|\| version\.preview_url/);
+  assert.match(workViewSource, /version\.preview_url \|\| version\.thumbnail_url/);
   assert.match(workViewSource, /class="version-thumb"/);
   assert.match(appSource, /function workListContextFromLocation/);
   assert.match(appSource, /api\(`\/api\/tags\/\$\{encodePath\(context\.value\)\}`\)/);
