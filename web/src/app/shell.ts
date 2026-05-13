@@ -94,7 +94,7 @@ function bindCommonActions() {
       const url = new URL(anchor.href);
       if (url.origin !== location.origin || url.pathname.startsWith("/api/")) return;
       event.preventDefault();
-      navigate(`${url.pathname}${url.search}`);
+      navigate(`${url.pathname}${url.search}${url.hash}`);
     });
   });
   document.querySelector("[data-menu]")?.addEventListener("click", () => document.body.classList.toggle("nav-open"));

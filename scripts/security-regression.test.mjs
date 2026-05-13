@@ -183,6 +183,16 @@ test("notification polling does not update member activity", () => {
   assert.ok(block.indexOf("requestCountsAsActivity(c)") < block.indexOf("UPDATE users SET last_active_at"));
 });
 
+test("SPA links preserve hash fragments for activity target highlights", () => {
+  const shellSource = readFileSync("web/src/app/shell.ts", "utf8");
+  const activityListSource = readFileSync("web/src/components/lists.tsx", "utf8");
+  assert.match(shellSource, /navigate\(`\$\{url\.pathname\}\$\{url\.search\}\$\{url\.hash\}`\)/);
+  assert.match(activityListSource, /<a class="activity-row" href=\{event\.href\} data-link/);
+  assert.match(activitySource, /#comment-\$\{encodeURIComponent\(row\.subject_id\)\}/);
+  assert.match(activitySource, /#heart-work-\$\{encodeURIComponent\(row\.target_work_id\)\}/);
+  assert.match(activitySource, /#heart-gallery-\$\{encodeURIComponent\(row\.target_id\)\}/);
+});
+
 test("password login and work posting mark members active without broad mutation touches", () => {
   const login = routeBlock('app.post("/api/auth/login"', 'app.post("/api/auth/logout"');
   assert.match(login, /touchUserActivity\(c, user\.id\)/);
