@@ -50,6 +50,7 @@ const appSource = [
 const serviceWorker = readFileSync("public/sw.js", "utf8");
 const wrangler = readFileSync("wrangler.jsonc", "utf8");
 const developersPage = readFileSync("public/developers.html", "utf8");
+const robotsTxt = readFileSync("public/robots.txt", "utf8");
 const checks = [];
 
 function test(name, fn) {
@@ -783,6 +784,12 @@ test("service worker does not cache API responses or original media", () => {
   assert.match(serviceWorker, /pathname\.includes\("\/original"\)/);
   assert.match(serviceWorker, /pathname\.includes\("high-resolution"\)/);
   assert.doesNotMatch(serviceWorker, /MANIFEST_URL|\/manifest\.webmanifest\?v=/);
+});
+
+test("robots.txt tells crawlers to stay out", () => {
+  assert.match(robotsTxt, /Fuck off, crawlers\./);
+  assert.match(robotsTxt, /User-agent: \*/);
+  assert.match(robotsTxt, /Disallow: \//);
 });
 
 test("human-readable API docs are published through worker routes", () => {
