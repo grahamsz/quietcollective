@@ -1,4 +1,5 @@
 // @ts-nocheck
+import EasyMDE from "easymde";
 import { icon } from "../components/icons";
 import { renderMarkdown } from "../lib/markdown";
 import { imageUploadVariants } from "../lib/utils";
@@ -61,7 +62,6 @@ function insertMarkdownImage(editor, imageUrl) {
 }
 
 function enhanceMarkdownEditors(scope = document) {
-  if (!window.EasyMDE) return;
   scope.querySelectorAll("textarea[data-markdown-editor]:not([data-editor-ready])").forEach((textarea) => {
     textarea.dataset.editorReady = "true";
     if (textarea.required) {

@@ -11,8 +11,6 @@ const requiredFiles = [
   "public/icon-maskable-192.png",
   "public/icon-maskable-512.png",
   "public/icon-maskable.svg",
-  "public/vendor/easymde/easymde.min.css",
-  "public/vendor/easymde/easymde.min.js",
   "public/manifest.webmanifest",
   "public/api/openapi.yaml",
   "public/developers.html",
@@ -36,6 +34,9 @@ if (developersIndex !== developersPage) {
   throw new Error("public/developers/index.html must match public/developers.html");
 }
 const index = await readFile("public/index.html", "utf8");
+if (index.includes("/vendor/easymde/") || serviceWorker.includes("/vendor/easymde/")) {
+  throw new Error("EasyMDE must be bundled into the app JS and CSS, not loaded as public vendor assets");
+}
 if (!/<meta name="qc-build" content="[a-f0-9]{12}">/.test(index)) {
   throw new Error("public/index.html must include the build fingerprint meta tag");
 }

@@ -30,6 +30,7 @@ const workViewSource = readFileSync("web/src/views/works.tsx", "utf8");
 const utilsSource = readFileSync("worker/src/utils.ts", "utf8");
 const stylesSource = readFileSync("public/styles.css", "utf8");
 const minifiedStylesSource = readFileSync("public/styles.min.css", "utf8");
+const easyMdeStylesSource = readFileSync("node_modules/easymde/dist/easymde.min.css", "utf8");
 const appSource = [
   "web/src/main.ts",
   "web/src/app/core.ts",
@@ -797,7 +798,11 @@ test("robots.txt tells crawlers to stay out", () => {
 test("release build serves the minified app stylesheet", () => {
   assert.match(indexPage, /href="\/styles\.min\.css\?v=[a-f0-9]{12}"/);
   assert.match(serviceWorker, /const STYLES_CSS_URL = "\/styles\.min\.css\?v=[a-f0-9]{12}";/);
-  assert.ok(minifiedStylesSource.length < stylesSource.length);
+  assert.ok(minifiedStylesSource.length < stylesSource.length + easyMdeStylesSource.length);
+  assert.match(minifiedStylesSource, /\.CodeMirror\{/);
+  assert.match(minifiedStylesSource, /\.EasyMDEContainer \.CodeMirror/);
+  assert.doesNotMatch(indexPage, /\/vendor\/easymde\//);
+  assert.doesNotMatch(serviceWorker, /\/vendor\/easymde\//);
 });
 
 test("human-readable API docs are published through worker routes", () => {
