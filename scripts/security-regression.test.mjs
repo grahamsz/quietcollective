@@ -29,6 +29,7 @@ const workTileSource = readFileSync("web/src/components/work-tile.tsx", "utf8");
 const workViewSource = readFileSync("web/src/views/works.tsx", "utf8");
 const utilsSource = readFileSync("worker/src/utils.ts", "utf8");
 const stylesSource = readFileSync("public/styles.css", "utf8");
+const minifiedStylesSource = readFileSync("public/styles.min.css", "utf8");
 const appSource = [
   "web/src/main.ts",
   "web/src/app/core.ts",
@@ -50,6 +51,7 @@ const appSource = [
 const serviceWorker = readFileSync("public/sw.js", "utf8");
 const wrangler = readFileSync("wrangler.jsonc", "utf8");
 const developersPage = readFileSync("public/developers.html", "utf8");
+const indexPage = readFileSync("public/index.html", "utf8");
 const robotsTxt = readFileSync("public/robots.txt", "utf8");
 const checks = [];
 
@@ -792,6 +794,12 @@ test("robots.txt tells crawlers to stay out", () => {
   assert.match(robotsTxt, /Disallow: \//);
 });
 
+test("release build serves the minified app stylesheet", () => {
+  assert.match(indexPage, /href="\/styles\.min\.css\?v=[a-f0-9]{12}"/);
+  assert.match(serviceWorker, /const STYLES_CSS_URL = "\/styles\.min\.css\?v=[a-f0-9]{12}";/);
+  assert.ok(minifiedStylesSource.length < stylesSource.length);
+});
+
 test("human-readable API docs are published through worker routes", () => {
   assert.match(developersPage, /<redoc spec-url="\/api\/openapi\.yaml"><\/redoc>/);
   assert.match(developersPage, /redoc\.standalone\.js/);
@@ -803,25 +811,24 @@ test("human-readable API docs are published through worker routes", () => {
 });
 
 test("PWA install icons use instance app icons when configured", () => {
-  const index = readFileSync("public/index.html", "utf8");
-  assert.match(index, /fonts\.googleapis\.com/);
-  assert.match(index, /fonts\.gstatic\.com/);
-  assert.match(index, /family=Montserrat[\s\S]*family=Urbanist[\s\S]*display=swap/);
-  assert.match(index, /class="boot-screen initial-boot-screen"/);
+  assert.match(indexPage, /fonts\.googleapis\.com/);
+  assert.match(indexPage, /fonts\.gstatic\.com/);
+  assert.match(indexPage, /family=Montserrat[\s\S]*family=Urbanist[\s\S]*display=swap/);
+  assert.match(indexPage, /class="boot-screen initial-boot-screen"/);
   assert.match(stylesSource, /\.initial-boot-screen[\s\S]*position: fixed[\s\S]*inset: 0/);
   assert.match(stylesSource, /--font-sans: Montserrat/);
   assert.match(stylesSource, /--font-display: Urbanist, Montserrat/);
   assert.match(stylesSource, /\.sidebar-install-app\.is-install-hidden[\s\S]*visibility: hidden/);
   assert.match(installSource, /class="sidebar-install-app install-button is-install-hidden"/);
   assert.match(installSource, /setInstallButtonVisible\(control as HTMLButtonElement/);
-  assert.match(index, /viewport-fit=cover/);
-  assert.match(index, /rel="manifest" href="\/manifest\.webmanifest"/);
-  assert.match(index, /rel="icon" href="\/favicon\.ico" type="image\/png" sizes="32x32"/);
-  assert.match(index, /rel="icon" href="\/favicon-32\.png" type="image\/png" sizes="32x32"/);
-  assert.match(index, /rel="icon" href="\/favicon-16\.png" type="image\/png" sizes="16x16"/);
-  assert.match(index, /rel="icon" href="\/icon-192\.png" type="image\/png" sizes="192x192"/);
-  assert.doesNotMatch(index, /alternate icon/);
-  assert.match(index, /rel="apple-touch-icon" href="\/apple-touch-icon\.png"/);
+  assert.match(indexPage, /viewport-fit=cover/);
+  assert.match(indexPage, /rel="manifest" href="\/manifest\.webmanifest"/);
+  assert.match(indexPage, /rel="icon" href="\/favicon\.ico" type="image\/png" sizes="32x32"/);
+  assert.match(indexPage, /rel="icon" href="\/favicon-32\.png" type="image\/png" sizes="32x32"/);
+  assert.match(indexPage, /rel="icon" href="\/favicon-16\.png" type="image\/png" sizes="16x16"/);
+  assert.match(indexPage, /rel="icon" href="\/icon-192\.png" type="image\/png" sizes="192x192"/);
+  assert.doesNotMatch(indexPage, /alternate icon/);
+  assert.match(indexPage, /rel="apple-touch-icon" href="\/apple-touch-icon\.png"/);
   assert.match(workerRoutes, /app\.get\("\/favicon\.ico"[\s\S]*serveInstanceAppIcon\(c, "any", "\/icon-192\.png", "32"\)/);
   assert.match(workerRoutes, /app\.get\("\/favicon-16\.png"[\s\S]*serveInstanceAppIcon\(c, "any", "\/icon-192\.png", "16"\)/);
   assert.match(workerRoutes, /app\.get\("\/favicon-32\.png"[\s\S]*serveInstanceAppIcon\(c, "any", "\/icon-192\.png", "32"\)/);

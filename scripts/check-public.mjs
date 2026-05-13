@@ -4,6 +4,7 @@ const requiredFiles = [
   "public/index.html",
   "public/app.js",
   "public/styles.css",
+  "public/styles.min.css",
   "public/sw.js",
   "public/icon-192.png",
   "public/icon-512.png",
@@ -40,7 +41,7 @@ if (!/<meta name="qc-build" content="[a-f0-9]{12}">/.test(index)) {
 }
 if (
   !/href="\/manifest\.webmanifest"/.test(index) ||
-  !/href="\/styles\.css\?v=[a-f0-9]{12}"/.test(index) ||
+  !/href="\/styles\.min\.css\?v=[a-f0-9]{12}"/.test(index) ||
   !/src="\/app\.js\?v=[a-f0-9]{12}"/.test(index)
 ) {
   throw new Error("public/index.html must reference the manifest and versioned app and stylesheet assets");

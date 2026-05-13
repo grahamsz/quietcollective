@@ -12,7 +12,7 @@ function replaceOrThrow(source, pattern, replacement, label) {
 
 const [appJs, stylesCss] = await Promise.all([
   readFile("public/app.js"),
-  readFile("public/styles.css"),
+  readFile("public/styles.min.css"),
 ]);
 
 const appHash = hash(appJs);
@@ -34,8 +34,8 @@ index = replaceOrThrow(
 );
 index = replaceOrThrow(
   index,
-  /href="\/styles\.css(?:\?v=[^"]*)?"/,
-  `href="/styles.css?v=${stylesHash}"`,
+  /href="\/styles(?:\.min)?\.css(?:\?v=[^"]*)?"/,
+  `href="/styles.min.css?v=${stylesHash}"`,
   "styles link",
 );
 index = replaceOrThrow(
@@ -55,8 +55,8 @@ serviceWorker = replaceOrThrow(
 );
 serviceWorker = replaceOrThrow(
   serviceWorker,
-  /const STYLES_CSS_URL = "\/styles\.css(?:\?v=[^"]*)?";/,
-  `const STYLES_CSS_URL = "/styles.css?v=${stylesHash}";`,
+  /const STYLES_CSS_URL = "\/styles(?:\.min)?\.css(?:\?v=[^"]*)?";/,
+  `const STYLES_CSS_URL = "/styles.min.css?v=${stylesHash}";`,
   "service worker styles URL",
 );
 serviceWorker = replaceOrThrow(
