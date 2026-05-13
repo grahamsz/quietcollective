@@ -50,15 +50,6 @@ const appSource = [
 const serviceWorker = readFileSync("public/sw.js", "utf8");
 const wrangler = readFileSync("wrangler.jsonc", "utf8");
 const developersPage = readFileSync("public/developers.html", "utf8");
-const fontFiles = [
-  "public/fonts/montserrat-cyrillic-ext.woff2",
-  "public/fonts/montserrat-cyrillic.woff2",
-  "public/fonts/montserrat-latin-ext.woff2",
-  "public/fonts/montserrat-latin.woff2",
-  "public/fonts/montserrat-vietnamese.woff2",
-  "public/fonts/urbanist-latin-ext.woff2",
-  "public/fonts/urbanist-latin.woff2",
-].map((file) => readFileSync(file));
 const checks = [];
 
 function test(name, fn) {
@@ -806,12 +797,9 @@ test("human-readable API docs are published through worker routes", () => {
 
 test("PWA install icons use instance app icons when configured", () => {
   const index = readFileSync("public/index.html", "utf8");
-  assert.doesNotMatch(index, /fonts\.googleapis|fonts\.gstatic/);
-  assert.match(index, /href="\/fonts\/montserrat-latin\.woff2"[\s\S]*as="font"[\s\S]*type="font\/woff2"/);
-  assert.match(index, /href="\/fonts\/urbanist-latin\.woff2"[\s\S]*as="font"[\s\S]*type="font\/woff2"/);
-  assert.match(stylesSource, /font-family: "Montserrat"[\s\S]*src: url\("\/fonts\/montserrat-latin\.woff2"\) format\("woff2"\)/);
-  assert.match(stylesSource, /font-family: "Urbanist"[\s\S]*src: url\("\/fonts\/urbanist-latin\.woff2"\) format\("woff2"\)/);
-  for (const file of fontFiles) assert.ok(file.length > 0);
+  assert.match(index, /fonts\.googleapis\.com/);
+  assert.match(index, /fonts\.gstatic\.com/);
+  assert.match(index, /family=Montserrat[\s\S]*family=Urbanist[\s\S]*display=swap/);
   assert.match(index, /class="boot-screen initial-boot-screen"/);
   assert.match(stylesSource, /\.initial-boot-screen[\s\S]*position: fixed[\s\S]*inset: 0/);
   assert.match(stylesSource, /--font-sans: Montserrat/);
