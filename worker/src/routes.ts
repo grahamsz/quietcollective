@@ -81,6 +81,12 @@ type GalleryWorkListRow = WorkRow & {
   collaborator_can_comment: number | null;
 };
 
+type TagCommentRow = Record<string, unknown> & {
+  id: string;
+  target_type: string;
+  target_id: string;
+};
+
 export function registerRoutes(app: RouteApp, deps: RouteDeps) {
   const { prepareApiCache, readBody, getUserById, getUserByHandle, requireUser, currentUser, fullCurrentUser, publicUser, getTags, getSetting, setSetting, publicInstanceSettings, refreshPublicInstanceSettings, instanceInfo, adminCount, isAdmin, galleryCapabilities, getWork, workGalleryLinks, workCapabilities, galleryVisibilityRank, workVisibilityRank, assertGalleryCapability, assertGalleryCrosspostTarget, assertWorkCapability, assertWorkCrosspostCapability, canViewTarget, canCommentTarget, insertEvent, processEvent, serializeGallery, reactionSummary, serializeWork, serializeVersion, serializeGalleryWorkListItem, putR2File, ensureWorkRoleSuggestion } = deps;
 
@@ -104,6 +110,10 @@ const INVITE_TEXT = "Welcome to my {{instance_name}} community. Use this invite 
 
 function escapeHtml(value: string) {
   return value.replace(/[&<>"']/g, (char) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[char] || char);
+}
+
+function sqlPlaceholders(values: unknown[]) {
+  return values.map(() => "?").join(",");
 }
 
 function simpleMarkdownToHtml(value: string) {
@@ -2555,6 +2565,126 @@ app.get("/api/tags/:tag", async (c) => {
   return cacheableJson(c, cache, data);
 });
 
+async function publicUsersWithTags(db: D1Database, users: AppUser[]) {
+  if (!users.length) return [];
+  const userIds = users.map((user) => user.id);
+  const tagRows = await db.prepare(
+    `SELECT user_id, tag
+     FROM medium_tags
+     WHERE user_id IN (${sqlPlaceholders(userIds)})
+     ORDER BY tag`,
+  ).bind(...userIds).all<{ user_id: string; tag: string }>();
+  const tagsByUser = new Map<string, string[]>();
+  for (const row of tagRows.results) {
+    const tags = tagsByUser.get(row.user_id) || [];
+    tags.push(row.tag);
+    tagsByUser.set(row.user_id, tags);
+  }
+  return users.map((user) => publicUser(user, tagsByUser.get(user.id) || []));
+}
+
+function targetKey(targetType: string, targetId: string) {
+  return `${targetType}\0${targetId}`;
+}
+
+async function visibleTargetKeysForUser(c: Ctx, user: AuthenticatedUser, targets: Array<{ target_type: string; target_id: string }>, depth = 0): Promise<Set<string>> {
+  const visible = new Set<string>();
+  const profileIds = new Set<string>();
+  const galleryIds = new Set<string>();
+  const workIds = new Set<string>();
+  const versionIds = new Set<string>();
+  const commentIds = new Set<string>();
+
+  for (const target of targets) {
+    const targetId = stringField(target.target_id);
+    if (!targetId) continue;
+    if (target.target_type === "profile") profileIds.add(targetId);
+    if (target.target_type === "gallery") galleryIds.add(targetId);
+    if (target.target_type === "work") workIds.add(targetId);
+    if (target.target_type === "version") versionIds.add(targetId);
+    if (target.target_type === "comment") commentIds.add(targetId);
+  }
+
+  await Promise.all([
+    (async () => {
+      if (!profileIds.size) return;
+      const ids = [...profileIds];
+      const rows = await c.env.DB.prepare(
+        `SELECT id FROM users
+         WHERE id IN (${sqlPlaceholders(ids)})
+           AND disabled_at IS NULL`,
+      ).bind(...ids).all<{ id: string }>();
+      for (const row of rows.results) visible.add(targetKey("profile", row.id));
+    })(),
+    (async () => {
+      const galleries = await visibleGalleryIds(c.env.DB, user, galleryIds);
+      for (const id of galleries) visible.add(targetKey("gallery", id));
+    })(),
+    (async () => {
+      const works = await visibleWorkIds(c.env.DB, user, workIds);
+      for (const id of works) visible.add(targetKey("work", id));
+    })(),
+    (async () => {
+      if (!versionIds.size) return;
+      const ids = [...versionIds];
+      const rows = await c.env.DB.prepare(
+        `SELECT id, work_id
+         FROM work_versions
+         WHERE id IN (${sqlPlaceholders(ids)})`,
+      ).bind(...ids).all<{ id: string; work_id: string }>();
+      const visibleWorks = await visibleWorkIds(c.env.DB, user, new Set(rows.results.map((row) => row.work_id)));
+      for (const row of rows.results) {
+        if (visibleWorks.has(row.work_id)) visible.add(targetKey("version", row.id));
+      }
+    })(),
+  ]);
+
+  if (commentIds.size && depth < 4) {
+    const ids = [...commentIds];
+    const rows = await c.env.DB.prepare(
+      `SELECT id, target_type, target_id
+       FROM comments
+       WHERE id IN (${sqlPlaceholders(ids)})
+         AND deleted_at IS NULL`,
+    ).bind(...ids).all<{ id: string; target_type: string; target_id: string }>();
+    const nestedVisible = await visibleTargetKeysForUser(c, user, rows.results, depth + 1);
+    for (const row of rows.results) {
+      if (nestedVisible.has(targetKey(row.target_type, row.target_id))) visible.add(targetKey("comment", row.id));
+    }
+  }
+
+  return visible;
+}
+
+async function commentsWithVisibilityAndReactions(c: Ctx, user: AuthenticatedUser, rows: TagCommentRow[], limit = 120) {
+  const visibleTargets = await visibleTargetKeysForUser(c, user, rows);
+  const visibleRows = rows
+    .filter((row) => visibleTargets.has(targetKey(row.target_type, row.target_id)))
+    .slice(0, limit);
+  if (!visibleRows.length) return [];
+
+  const commentIds = visibleRows.map((row) => row.id);
+  const reactionRows = await c.env.DB.prepare(
+    `SELECT target_id AS comment_id,
+            COUNT(*) AS heart_count,
+            MAX(CASE WHEN user_id = ? THEN 1 ELSE 0 END) AS hearted_by_me
+     FROM reactions
+     WHERE target_type = 'comment'
+       AND reaction = 'heart'
+       AND target_id IN (${sqlPlaceholders(commentIds)})
+     GROUP BY target_id`,
+  ).bind(user.id, ...commentIds).all<{ comment_id: string; heart_count: number; hearted_by_me: number | null }>();
+  const reactionsByComment = new Map(reactionRows.results.map((row) => [row.comment_id, {
+    heart_count: row.heart_count || 0,
+    hearted_by_me: !!row.hearted_by_me,
+  }]));
+
+  return visibleRows.map((comment) => ({
+    ...comment,
+    reactions: reactionsByComment.get(comment.id) || { heart_count: 0, hearted_by_me: false },
+  }));
+}
+
 async function legacyTagDetailForUser(c: Ctx, user: AuthenticatedUser, tag: string) {
   const pattern = `%#${tag}%`;
   const barePattern = `%${tag}%`;
@@ -2590,10 +2720,7 @@ async function legacyTagDetailForUser(c: Ctx, user: AuthenticatedUser, tag: stri
        AND (lower(users.handle) LIKE ? OR lower(users.bio) LIKE ? OR lower(medium_tags.tag) = ?)
      ORDER BY users.handle COLLATE NOCASE LIMIT 80`,
   ).bind(barePattern, pattern, tag).all<AppUser>();
-  const members = [];
-  for (const member of memberRows.results) {
-    members.push(publicUser(member, await getTags(c.env.DB, member.id)));
-  }
+  const members = await publicUsersWithTags(c.env.DB, memberRows.results);
 
   const commentRows = await c.env.DB.prepare(
     `SELECT comments.*, users.display_name, users.handle,
@@ -2606,13 +2733,8 @@ async function legacyTagDetailForUser(c: Ctx, user: AuthenticatedUser, tag: stri
      LEFT JOIN users AS parent_users ON parent_users.id = parent_comments.author_id
      WHERE comments.deleted_at IS NULL AND lower(comments.body) LIKE ?
      ORDER BY comments.created_at DESC LIMIT 120`,
-  ).bind(pattern).all<{ target_type: string; target_id: string }>();
-  const comments = [];
-  for (const comment of commentRows.results as Array<{ id: string; target_type: string; target_id: string }>) {
-    if (await canViewTarget(c.env.DB, user, comment.target_type, comment.target_id)) {
-      comments.push({ ...comment, reactions: await reactionSummary(c.env.DB, user, "comment", comment.id) });
-    }
-  }
+  ).bind(pattern).all<TagCommentRow>();
+  const comments = await commentsWithVisibilityAndReactions(c, user, commentRows.results);
 
   return { tag, galleries, works, members, comments };
 }
@@ -2634,9 +2756,47 @@ async function indexedTagDetailForUser(c: Ctx, user: AuthenticatedUser, tag: str
   const galleries = await Promise.all(galleryRows.results.map((gallery) => serializeGallery(c.env, user, gallery)));
 
   const workRows = await c.env.DB.prepare(
-    `SELECT works.*
+    `SELECT works.*,
+            creators.handle AS created_by_handle,
+            creators.display_name AS created_by_display_name,
+            work_versions.id AS version_id,
+            work_versions.work_id AS version_work_id,
+            work_versions.version_number AS version_number,
+            work_versions.body_markdown AS body_markdown,
+            work_versions.body_plain AS body_plain,
+            work_versions.original_r2_key AS original_r2_key,
+            work_versions.original_content_type AS original_content_type,
+            work_versions.preview_r2_key AS preview_r2_key,
+            work_versions.preview_content_type AS preview_content_type,
+            work_versions.thumbnail_r2_key AS thumbnail_r2_key,
+            work_versions.thumbnail_content_type AS thumbnail_content_type,
+            work_versions.original_filename AS original_filename,
+            work_versions.created_by AS version_created_by,
+            work_versions.created_at AS version_created_at,
+            COUNT(reactions.id) AS heart_count,
+            MAX(CASE WHEN reactions.user_id = ? THEN 1 ELSE 0 END) AS hearted_by_me,
+            feedback_request_dismissals.dismissed_at AS feedback_dismissed_at,
+            current_work_collaborator.can_edit AS collaborator_can_edit,
+            current_work_collaborator.can_version AS collaborator_can_version,
+            current_work_collaborator.can_comment AS collaborator_can_comment
      FROM tag_index
      JOIN works ON works.id = tag_index.target_id
+     JOIN users AS creators ON creators.id = works.created_by
+     LEFT JOIN work_versions ON work_versions.id = works.current_version_id
+     LEFT JOIN reactions ON reactions.target_type = 'work'
+       AND reactions.target_id = works.id
+       AND reactions.reaction = 'heart'
+     LEFT JOIN feedback_request_dismissals ON feedback_request_dismissals.work_id = works.id
+       AND feedback_request_dismissals.user_id = ?
+     LEFT JOIN (
+       SELECT work_id,
+              MAX(can_edit) AS can_edit,
+              MAX(can_version) AS can_version,
+              MAX(can_comment) AS can_comment
+       FROM work_collaborators
+       WHERE user_id = ?
+       GROUP BY work_id
+     ) AS current_work_collaborator ON current_work_collaborator.work_id = works.id
      WHERE tag_index.tag = ?
        AND tag_index.target_type = 'work'
        AND works.deleted_at IS NULL
@@ -2644,8 +2804,8 @@ async function indexedTagDetailForUser(c: Ctx, user: AuthenticatedUser, tag: str
      GROUP BY works.id
      ORDER BY MAX(tag_index.updated_at) DESC
      LIMIT 120`,
-  ).bind(tag, ...tagVisibleWorkArgs(user)).all<WorkRow>();
-  const works = await Promise.all(workRows.results.map((work) => serializeWork(c.env, user, work)));
+  ).bind(user.id, user.id, user.id, tag, ...tagVisibleWorkArgs(user)).all<GalleryWorkListRow>();
+  const works = await Promise.all(workRows.results.map((work) => serializeGalleryWorkListItem(c.env, user, work, HOME_WORK_GALLERY_CAPS)));
 
   const memberRows = await c.env.DB.prepare(
     `SELECT DISTINCT users.*
@@ -2658,10 +2818,7 @@ async function indexedTagDetailForUser(c: Ctx, user: AuthenticatedUser, tag: str
      ORDER BY users.handle COLLATE NOCASE
      LIMIT 80`,
   ).bind(tag, barePattern).all<AppUser>();
-  const members = [];
-  for (const member of memberRows.results) {
-    members.push(publicUser(member, await getTags(c.env.DB, member.id)));
-  }
+  const members = await publicUsersWithTags(c.env.DB, memberRows.results);
 
   const commentRows = await c.env.DB.prepare(
     `SELECT comments.*, users.display_name, users.handle,
@@ -2678,14 +2835,8 @@ async function indexedTagDetailForUser(c: Ctx, user: AuthenticatedUser, tag: str
        AND comments.deleted_at IS NULL
      ORDER BY comments.created_at DESC
      LIMIT 240`,
-  ).bind(tag).all<{ target_type: string; target_id: string }>();
-  const comments = [];
-  for (const comment of commentRows.results as Array<{ id: string; target_type: string; target_id: string }>) {
-    if (comments.length >= 120) break;
-    if (await canViewTarget(c.env.DB, user, comment.target_type, comment.target_id)) {
-      comments.push({ ...comment, reactions: await reactionSummary(c.env.DB, user, "comment", comment.id) });
-    }
-  }
+  ).bind(tag).all<TagCommentRow>();
+  const comments = await commentsWithVisibilityAndReactions(c, user, commentRows.results);
 
   return { tag, galleries, works, members, comments };
 }
