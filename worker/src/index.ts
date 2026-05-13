@@ -5,10 +5,14 @@ import {
   prepareApiCache as prepareApiCacheState,
 } from "./api-cache";
 import type { AppContext, Ctx } from "./app-context";
+import { getSecret } from "./crypto";
+import { instrumentD1Env, withD1MetricsHeaders } from "./d1-metrics";
+import { clearExpiredFeedbackRequests } from "./feedback-cleanup";
 import { signedMediaUrl } from "./media";
 import { canCrosspostToGallery, ownsGallery, resolveGalleryCapabilities, resolveWorkCapabilities, type GalleryMemberPermissions } from "./permissions";
 import { registerRoutes } from "./routes";
 import { createSession, expiredSessionCookie, parseCookies, readSession, sessionCookie, userFromSessionClaims } from "./sessions";
+import { rebuildTagIndex } from "./tag-index";
 import type { AppUser, AuthenticatedUser, Env, GalleryCapabilities, GalleryRow, WorkRow, WorkVersionRow } from "./types";
 import { sendWebPushTickle, webPushConfigured } from "./web-push";
 import {
@@ -114,7 +118,7 @@ type PublicInstanceSettings = {
 };
 
 async function prepareApiCache(c: Ctx, scope: string) {
-  return prepareApiCacheState(c.env.DB, currentUser(c).id, c.req.header("if-none-match"), scope);
+  return prepareApiCacheState(c.env.DB, currentUser(c).id, c.req.header("if-none-match"), scope, getSecret(c.env));
 }
 
 async function readBody(c: Ctx) {
@@ -168,7 +172,8 @@ function requestCountsAsActivity(c: Ctx) {
 async function requireUser(c: Ctx, next: Next) {
   const auth = c.req.header("authorization") || "";
   const bearer = auth.match(/^Bearer\s+(.+)$/i)?.[1];
-  const token = bearer || parseCookies(c.req.header("cookie")).get("qc_session");
+  const cookie = parseCookies(c.req.header("cookie")).get("qc_session");
+  const token = cookie || bearer;
   if (!token) return c.json({ error: "Not authenticated" }, 401);
 
   const session = await readSession(token, c.env).catch(() => null);
@@ -430,9 +435,10 @@ async function workGalleryLinks(db: D1Database, work: WorkRow) {
 
 async function workCapabilities(db: D1Database, user: AuthenticatedUser, workId: string) {
   const work = await getWork(db, workId);
-  if (!work) return { exists: false, work: null, caps: EMPTY_CAPABILITIES, version: false, crosspost: false };
+  if (!work) return { exists: false, work: null, galleries: [], galleryCaps: [], caps: EMPTY_CAPABILITIES, version: false, crosspost: false };
   const galleries = await workGalleryLinks(db, work);
   const galleryCapsList = await Promise.all(galleries.map((gallery) => galleryCapabilities(db, user, gallery.id)));
+  const galleryCapsByGallery = galleries.map((gallery, index) => ({ gallery, caps: galleryCapsList[index] || EMPTY_CAPABILITIES }));
   const galleryCaps = galleryCapsList.reduce(
     (merged, caps) => ({
       view: merged.view || caps.view,
@@ -459,7 +465,7 @@ async function workCapabilities(db: D1Database, user: AuthenticatedUser, workId:
       }
     : null;
   const resolved = resolveWorkCapabilities({ galleryCaps, work, user, collaborator });
-  return { exists: true, work, ...resolved };
+  return { exists: true, work, galleries, galleryCaps: galleryCapsByGallery, ...resolved };
 }
 
 function galleryVisibilityRank(gallery: Pick<GalleryRow, "visibility" | "ownership_type" | "whole_server_upload">) {
@@ -902,21 +908,50 @@ async function reactionSummary(db: D1Database, user: AuthenticatedUser, targetTy
   };
 }
 
-async function serializeWork(env: Env, user: AuthenticatedUser, work: WorkRow) {
-  const currentVersion = work.current_version_id
+type WorkCapabilityResult = Awaited<ReturnType<typeof workCapabilities>>;
+
+type SerializeWorkOptions = {
+  capabilityResult?: WorkCapabilityResult;
+  currentVersion?: WorkVersionRow | null;
+  leanGalleries?: boolean;
+};
+
+function leanWorkGallery(gallery: GalleryRow, caps: GalleryCapabilities) {
+  return {
+    id: gallery.id,
+    title: gallery.title,
+    visibility: gallery.visibility,
+    ownership_type: gallery.whole_server_upload ? "whole_server" : gallery.ownership_type,
+    whole_server_upload: gallery.whole_server_upload,
+    created_at: gallery.created_at,
+    updated_at: gallery.updated_at,
+    capabilities: caps,
+  };
+}
+
+async function serializeWork(env: Env, user: AuthenticatedUser, work: WorkRow, options: SerializeWorkOptions = {}) {
+  const currentVersion = Object.hasOwn(options, "currentVersion")
+    ? options.currentVersion || null
+    : work.current_version_id
     ? await env.DB.prepare("SELECT * FROM work_versions WHERE id = ?").bind(work.current_version_id).first<WorkVersionRow>()
     : null;
-  const caps = await workCapabilities(env.DB, user, work.id);
+  const caps = options.capabilityResult || await workCapabilities(env.DB, user, work.id);
   const [reaction, feedbackDismissal, linkedGalleries, creator] = await Promise.all([
     reactionSummary(env.DB, user, "work", work.id),
     env.DB.prepare("SELECT dismissed_at FROM feedback_request_dismissals WHERE work_id = ? AND user_id = ?").bind(work.id, user.id).first<{ dismissed_at: string }>(),
-    workGalleryLinks(env.DB, work),
+    options.capabilityResult?.galleries ? Promise.resolve(options.capabilityResult.galleries) : workGalleryLinks(env.DB, work),
     env.DB.prepare("SELECT handle, display_name FROM users WHERE id = ?").bind(work.created_by).first<{ handle: string; display_name: string }>(),
   ]);
   const galleries = [];
-  for (const gallery of linkedGalleries) {
-    const serialized = await serializeGallery(env, user, gallery);
-    if (serialized.capabilities.view) galleries.push(serialized);
+  if (options.leanGalleries && options.capabilityResult?.galleryCaps) {
+    for (const row of options.capabilityResult.galleryCaps) {
+      if (row.caps.view) galleries.push(leanWorkGallery(row.gallery, row.caps));
+    }
+  } else {
+    for (const gallery of linkedGalleries) {
+      const serialized = await serializeGallery(env, user, gallery);
+      if (serialized.capabilities.view) galleries.push(serialized);
+    }
   }
   const feedbackRequested = feedbackRequestActive(work);
   return {
@@ -1070,7 +1105,11 @@ registerRoutes(app, {
 });
 
 export default {
-  fetch: app.fetch,
+  async fetch(request: Request, env: Env, ctx: ExecutionContext) {
+    const instrumented = instrumentD1Env(env);
+    const response = await app.fetch(request, instrumented.env, ctx);
+    return withD1MetricsHeaders(response, instrumented.metrics);
+  },
   async queue(batch: MessageBatch<{ kind?: string; eventId?: string }>, env: Env) {
     for (const message of batch.messages) {
       if (message.body?.kind === "process_event" && message.body.eventId) {
@@ -1078,5 +1117,10 @@ export default {
       }
       message.ack();
     }
+  },
+  async scheduled(_event: ScheduledEvent, env: Env) {
+    await clearExpiredFeedbackRequests(env.DB);
+    await rebuildTagIndex(env.DB);
+    await bumpApiCacheToken(env.DB).catch(() => undefined);
   },
 };

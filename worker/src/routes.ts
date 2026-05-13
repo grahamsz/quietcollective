@@ -25,6 +25,7 @@ import { base64Url, decryptString, encryptString, getSecret, sha256 } from "./cr
 import { sendEmail, smtpConfigured, type SmtpConfig } from "./email";
 import { r2PresignedGetUrl, readSignedMediaPayload, signedMediaUrl } from "./media";
 import { createSession, expiredSessionCookie, sessionCookie } from "./sessions";
+import { rebuildTagIndex, reindexCommentTags, reindexGalleryTags, reindexUserTags, reindexWorkTags, removeTagIndexForTarget, tagIndexReady } from "./tag-index";
 import { webPushConfigured } from "./web-push";
 import type { AppContext, Ctx } from "./app-context";
 import {
@@ -38,7 +39,7 @@ import {
   POPULAR_TAG_WINDOW_DAYS,
   ROLE_SUGGESTIONS,
 } from "./constants";
-import type { AppUser, AuthenticatedUser, Env, GalleryRow, WorkRow, WorkVersionRow } from "./types";
+import type { AppUser, AuthenticatedUser, Env, GalleryCapabilities, GalleryRow, WorkRow, WorkVersionRow } from "./types";
 import { cacheControl, fileField, jsonText, normalizeClientUploadKey, normalizeGalleryOwnership, normalizeHandle, normalizeRoleLabel, normalizeTag, now, numberField, parseJson, recordTagUse, recordTextTags, stringField, truthy } from "./utils";
 import type { RouteApp, RouteDeps } from "./routes/types";
 
@@ -78,9 +79,6 @@ type GalleryWorkListRow = WorkRow & {
   collaborator_can_version: number | null;
   collaborator_can_comment: number | null;
 };
-
-let feedbackCleanupCheckedAt = 0;
-const FEEDBACK_CLEANUP_INTERVAL_MS = 5 * 60 * 1000;
 
 export function registerRoutes(app: RouteApp, deps: RouteDeps) {
   const { prepareApiCache, readBody, getUserById, getUserByHandle, requireUser, currentUser, fullCurrentUser, publicUser, getTags, getSetting, setSetting, publicInstanceSettings, refreshPublicInstanceSettings, instanceInfo, adminCount, isAdmin, galleryCapabilities, getWork, workGalleryLinks, workCapabilities, galleryVisibilityRank, workVisibilityRank, assertGalleryCapability, assertGalleryCrosspostTarget, assertWorkCapability, assertWorkCrosspostCapability, canViewTarget, canCommentTarget, insertEvent, processEvent, serializeGallery, reactionSummary, serializeWork, serializeVersion, serializeGalleryWorkListItem, putR2File, ensureWorkRoleSuggestion } = deps;
@@ -296,22 +294,6 @@ async function createPasswordReset(c: Ctx, user: AppUser, createdBy: string | nu
   return { token, reset_url: await absoluteUrl(c, `/reset-password/${token}`), expires_at: expiresAt };
 }
 
-async function clearExpiredFeedbackRequests(db: D1Database) {
-  const timestamp = Date.now();
-  if (timestamp - feedbackCleanupCheckedAt < FEEDBACK_CLEANUP_INTERVAL_MS) return;
-  feedbackCleanupCheckedAt = timestamp;
-  const result = await db.prepare(
-    `UPDATE works
-     SET feedback_requested = 0,
-         feedback_requested_at = NULL,
-         feedback_prompt = NULL
-     WHERE feedback_requested = 1
-       AND feedback_requested_at IS NOT NULL
-       AND datetime(feedback_requested_at) <= datetime('now', '-7 days')`,
-  ).run();
-  if ((result.meta as { changes?: number } | undefined)?.changes) await bumpApiCacheToken(db);
-}
-
 async function clearFeedbackRequestForCommentTarget(db: D1Database, targetType: string, targetId: string) {
   let workId = "";
   if (targetType === "work") {
@@ -358,11 +340,6 @@ app.use("*", async (c, next) => {
   c.header("Referrer-Policy", "no-referrer");
   c.header("X-Frame-Options", "DENY");
   c.header("Permissions-Policy", "camera=(), geolocation=(), microphone=(), payment=(), usb=()");
-});
-
-app.use("/api/*", async (c, next) => {
-  await clearExpiredFeedbackRequests(c.env.DB);
-  await next();
 });
 
 app.get("/api/health", (c) => c.json({ ok: true, service: "quietcollective" }));
@@ -515,9 +492,9 @@ app.post("/api/setup/admin", async (c) => {
   const passwordHash = await bcrypt.hash(password, 10);
   await c.env.DB.prepare(
     `INSERT INTO users
-       (id, email, password_hash, role, display_name, handle, bio, links_json, password_changed_at, created_at, updated_at)
-     VALUES (?, ?, ?, 'admin', ?, ?, '', '[]', ?, ?, ?)`,
-  ).bind(id, email, passwordHash, displayName, handle, timestamp, timestamp, timestamp).run();
+       (id, email, password_hash, role, display_name, handle, bio, links_json, password_changed_at, last_active_at, created_at, updated_at)
+     VALUES (?, ?, ?, 'admin', ?, ?, '', '[]', ?, ?, ?, ?)`,
+  ).bind(id, email, passwordHash, displayName, handle, timestamp, timestamp, timestamp, timestamp).run();
 
   for (const role of ROLE_SUGGESTIONS) {
     await c.env.DB.prepare(
@@ -545,6 +522,8 @@ app.post("/api/auth/login", async (c) => {
   if (!user || user.disabled_at || !(await bcrypt.compare(password, user.password_hash))) {
     return c.json({ error: "Invalid email or password" }, 401);
   }
+  const activeAt = await touchUserActivity(c, user.id);
+  if (activeAt) user.last_active_at = activeAt;
   const token = await createSession(user, c.env);
   c.header("Set-Cookie", sessionCookie(token));
   return c.json({ token, user: await publicUserWithRequirements(c.env.DB, user, await getTags(c.env.DB, user.id)) });
@@ -563,6 +542,37 @@ app.get("/api/auth/me", requireUser, async (c) => {
   return cacheableJson(c, cache, {
     user: await publicUserWithRequirements(c.env.DB, user, await getTags(c.env.DB, user.id)),
     instance: await instanceInfo(c.env),
+  });
+});
+
+app.get("/api/home", requireUser, async (c) => {
+  const user = currentUser(c);
+  const cache = await prepareApiCache(c, "home");
+  if (cache.fresh) return apiNotModified(cache);
+  const fullUser = await fullCurrentUser(c);
+  if (!fullUser) return c.json({ error: "Not authenticated" }, 401);
+
+  const [userTags, instance, galleries, members, popularTags, activityEvents, notifications, works] = await Promise.all([
+    getTags(c.env.DB, user.id),
+    instanceInfo(c.env),
+    visibleGalleries(c, user),
+    visibleMembers(c),
+    popularTagsForUser(c, user),
+    activityEventsForUser(c, user),
+    notificationsForUser(c, user),
+    homeRecentWorks(c, user),
+  ]);
+
+  return cacheableJson(c, cache, {
+    user: await publicUserWithRequirements(c.env.DB, fullUser, userTags),
+    instance,
+    galleries,
+    members,
+    popular_tags: popularTags,
+    activity_events: activityEvents,
+    notifications,
+    unread_count: notifications.filter((notification) => !notification.read_at).length,
+    works,
   });
 });
 
@@ -658,6 +668,7 @@ app.get("/api/media/signed/:token", async (c) => {
 });
 
 app.use("/api/admin/*", requireUser);
+app.use("/api/home", requireUser);
 app.use("/api/members", requireUser);
 app.use("/api/users/*", requireUser);
 app.use("/api/galleries", requireUser);
@@ -742,6 +753,13 @@ app.get("/api/admin", async (c) => {
     events: events?.count || 0,
     ...(await instanceInfo(c.env)),
   });
+});
+
+app.post("/api/admin/tag-index/rebuild", async (c) => {
+  const admin = await requireAdmin(c);
+  if (!admin.ok) return admin.response;
+  await rebuildTagIndex(c.env.DB);
+  return c.json({ ok: true });
 });
 
 app.get("/api/admin/events", async (c) => {
@@ -1127,6 +1145,15 @@ function inviteAcceptError(error: unknown) {
   return { message: "Could not accept invite.", status: 500 };
 }
 
+async function touchUserActivity(c: Ctx, userId: string, timestamp = now()) {
+  try {
+    await c.env.DB.prepare("UPDATE users SET last_active_at = ? WHERE id = ?").bind(timestamp, userId).run();
+    return timestamp;
+  } catch {
+    return null;
+  }
+}
+
 app.get("/api/invites/:token", async (c) => {
   const invite = await inviteFromToken(c.env.DB, c.req.param("token"));
   if (!invite || !inviteUsable(invite)) return c.json({ valid: false }, 404);
@@ -1160,6 +1187,8 @@ app.post("/api/invites/:token/accept", async (c) => {
       .bind(invite!.id, exactExistingUser.id)
       .first<{ id: string }>();
     if (acceptance && await bcrypt.compare(password, exactExistingUser.password_hash)) {
+      const activeAt = await touchUserActivity(c, exactExistingUser.id);
+      if (activeAt) exactExistingUser.last_active_at = activeAt;
       const session = await createSession(exactExistingUser, c.env);
       c.header("Set-Cookie", sessionCookie(session));
       return c.json({ token: session, user: await publicUserWithRequirements(c.env.DB, exactExistingUser, await getTags(c.env.DB, exactExistingUser.id)), duplicate: true });
@@ -1177,9 +1206,9 @@ app.post("/api/invites/:token/accept", async (c) => {
     await c.env.DB.batch([
       c.env.DB.prepare(
         `INSERT INTO users
-           (id, email, password_hash, role, display_name, handle, bio, links_json, password_changed_at, created_at, updated_at)
-         VALUES (?, ?, ?, ?, ?, ?, '', '[]', ?, ?, ?)`,
-      ).bind(id, email, await bcrypt.hash(password, 10), invite!.role_on_join, displayName, handle, timestamp, timestamp, timestamp),
+           (id, email, password_hash, role, display_name, handle, bio, links_json, password_changed_at, last_active_at, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, '', '[]', ?, ?, ?, ?)`,
+      ).bind(id, email, await bcrypt.hash(password, 10), invite!.role_on_join, displayName, handle, timestamp, timestamp, timestamp, timestamp),
       c.env.DB.prepare("UPDATE invites SET use_count = use_count + 1, last_used_at = ?, updated_at = ? WHERE id = ?").bind(timestamp, timestamp, invite!.id),
       c.env.DB.prepare(
         "INSERT INTO invite_acceptances (id, invite_id, accepted_by, accepted_email, role_granted, accepted_at) VALUES (?, ?, ?, ?, ?, ?)",
@@ -1211,13 +1240,118 @@ app.post("/api/invites/:token/accept", async (c) => {
   return c.json({ token: session, user: await publicUserWithRequirements(c.env.DB, newUser, []) }, 201);
 });
 
+async function visibleMembers(c: Ctx) {
+  const rows = await c.env.DB.prepare("SELECT * FROM users WHERE disabled_at IS NULL ORDER BY handle COLLATE NOCASE").all<AppUser>();
+  if (!rows.results.length) return [];
+  const ids = rows.results.map((user) => user.id);
+  const placeholders = ids.map(() => "?").join(",");
+  const tagRows = await c.env.DB.prepare(
+    `SELECT user_id, tag FROM medium_tags WHERE user_id IN (${placeholders}) ORDER BY tag`,
+  ).bind(...ids).all<{ user_id: string; tag: string }>();
+  const tagsByUser = new Map<string, string[]>();
+  for (const row of tagRows.results) {
+    const tags = tagsByUser.get(row.user_id) || [];
+    tags.push(row.tag);
+    tagsByUser.set(row.user_id, tags);
+  }
+  return rows.results.map((user) => publicUser(user, tagsByUser.get(user.id) || []));
+}
+
+async function visibleGalleries(c: Ctx, user: AuthenticatedUser) {
+  const rows = await c.env.DB.prepare("SELECT * FROM galleries ORDER BY updated_at DESC LIMIT 200").all<GalleryRow>();
+  const galleries = [];
+  for (const gallery of rows.results) {
+    const serialized = await serializeGallery(c.env, user, gallery);
+    if (serialized.capabilities.view) galleries.push(serialized);
+  }
+  return galleries;
+}
+
+const HOME_WORK_GALLERY_CAPS: GalleryCapabilities = {
+  view: true,
+  edit: false,
+  upload_work: false,
+  comment: false,
+  manage_collaborators: false,
+};
+
+async function homeRecentWorks(c: Ctx, user: AuthenticatedUser) {
+  const rows = await c.env.DB.prepare(
+    `SELECT works.*,
+            creators.handle AS created_by_handle,
+            creators.display_name AS created_by_display_name,
+            work_versions.id AS version_id,
+            work_versions.work_id AS version_work_id,
+            work_versions.version_number AS version_number,
+            work_versions.body_markdown AS body_markdown,
+            work_versions.body_plain AS body_plain,
+            work_versions.original_r2_key AS original_r2_key,
+            work_versions.original_content_type AS original_content_type,
+            work_versions.preview_r2_key AS preview_r2_key,
+            work_versions.preview_content_type AS preview_content_type,
+            work_versions.thumbnail_r2_key AS thumbnail_r2_key,
+            work_versions.thumbnail_content_type AS thumbnail_content_type,
+            work_versions.original_filename AS original_filename,
+            work_versions.created_by AS version_created_by,
+            work_versions.created_at AS version_created_at,
+            COUNT(reactions.id) AS heart_count,
+            MAX(CASE WHEN reactions.user_id = ? THEN 1 ELSE 0 END) AS hearted_by_me,
+            feedback_request_dismissals.dismissed_at AS feedback_dismissed_at,
+            current_work_collaborator.can_edit AS collaborator_can_edit,
+            current_work_collaborator.can_version AS collaborator_can_version,
+            current_work_collaborator.can_comment AS collaborator_can_comment
+     FROM works
+     JOIN users AS creators ON creators.id = works.created_by
+     LEFT JOIN work_versions ON work_versions.id = works.current_version_id
+     LEFT JOIN reactions ON reactions.target_type = 'work'
+       AND reactions.target_id = works.id
+       AND reactions.reaction = 'heart'
+     LEFT JOIN feedback_request_dismissals ON feedback_request_dismissals.work_id = works.id
+       AND feedback_request_dismissals.user_id = ?
+     LEFT JOIN (
+       SELECT work_id,
+              MAX(can_edit) AS can_edit,
+              MAX(can_version) AS can_version,
+              MAX(can_comment) AS can_comment
+       FROM work_collaborators
+       WHERE user_id = ?
+       GROUP BY work_id
+     ) AS current_work_collaborator ON current_work_collaborator.work_id = works.id
+     WHERE works.deleted_at IS NULL
+       AND (
+         works.created_by = ?
+         OR current_work_collaborator.work_id IS NOT NULL
+         OR EXISTS (
+           SELECT 1
+           FROM work_galleries
+           JOIN galleries ON galleries.id = work_galleries.gallery_id
+           WHERE work_galleries.work_id = works.id
+             AND (
+               galleries.owner_user_id = ?
+               OR galleries.created_by = ?
+               OR galleries.visibility = 'server_public'
+               OR galleries.whole_server_upload = 1
+               OR EXISTS (
+                 SELECT 1
+                 FROM gallery_members
+                 WHERE gallery_members.gallery_id = galleries.id
+                   AND gallery_members.user_id = ?
+                   AND gallery_members.can_view = 1
+               )
+             )
+         )
+       )
+     GROUP BY works.id
+     ORDER BY works.updated_at DESC
+     LIMIT 18`,
+  ).bind(user.id, user.id, user.id, user.id, user.id, user.id, user.id).all<GalleryWorkListRow>();
+  return Promise.all(rows.results.map((work) => serializeGalleryWorkListItem(c.env, user, work, HOME_WORK_GALLERY_CAPS)));
+}
+
 app.get("/api/members", async (c) => {
   const cache = await prepareApiCache(c, "members");
   if (cache.fresh) return apiNotModified(cache);
-  const rows = await c.env.DB.prepare("SELECT * FROM users WHERE disabled_at IS NULL ORDER BY handle COLLATE NOCASE").all<AppUser>();
-  const members = [];
-  for (const user of rows.results) members.push(publicUser(user, await getTags(c.env.DB, user.id)));
-  return cacheableJson(c, cache, { members });
+  return cacheableJson(c, cache, { members: await visibleMembers(c) });
 });
 
 app.get("/api/users/:handle", async (c) => {
@@ -1229,6 +1363,47 @@ app.get("/api/users/:handle", async (c) => {
   return cacheableJson(c, cache, { user: publicUser(user, await getTags(c.env.DB, user.id)) });
 });
 
+app.get("/api/users/:handle/works", async (c) => {
+  const handle = normalizeHandle(c.req.param("handle"));
+  const profileUser = await c.env.DB.prepare("SELECT * FROM users WHERE handle = ? AND disabled_at IS NULL").bind(handle).first<AppUser>();
+  if (!profileUser) return c.json({ error: "Not found" }, 404);
+  const cache = await prepareApiCache(c, `user-works:${handle}`);
+  if (cache.fresh) return apiNotModified(cache);
+  const rows = await c.env.DB.prepare(
+    `SELECT DISTINCT works.*
+     FROM works
+     LEFT JOIN work_collaborators ON work_collaborators.work_id = works.id
+       AND work_collaborators.user_id = ?
+     WHERE works.deleted_at IS NULL
+       AND (works.created_by = ? OR work_collaborators.user_id IS NOT NULL)
+     ORDER BY works.updated_at DESC
+     LIMIT 80`,
+  ).bind(profileUser.id, profileUser.id).all<WorkRow>();
+  const works = [];
+  for (const work of rows.results) {
+    if (await canViewTarget(c.env.DB, currentUser(c), "work", work.id)) works.push(await serializeWork(c.env, currentUser(c), work));
+  }
+  return cacheableJson(c, cache, { works });
+});
+
+function normalizedProfileLinks(raw: unknown) {
+  const rows = Array.isArray(raw) ? raw : parseJson(String(raw || "[]"), []);
+  if (!Array.isArray(rows)) return [];
+  return rows.map((item) => {
+    const site = stringField(typeof item === "object" && item ? (item as Record<string, unknown>).site || (item as Record<string, unknown>).label || (item as Record<string, unknown>).title : "").trim();
+    const rawUrl = stringField(typeof item === "string" ? item : typeof item === "object" && item ? (item as Record<string, unknown>).url || (item as Record<string, unknown>).href : "").trim();
+    if (!rawUrl) return null;
+    const candidate = /^https?:\/\//i.test(rawUrl) ? rawUrl : `https://${rawUrl}`;
+    try {
+      const url = new URL(candidate);
+      if (url.protocol !== "http:" && url.protocol !== "https:") return null;
+      return { site: site || url.hostname.replace(/^www\./, ""), url: url.toString() };
+    } catch {
+      return null;
+    }
+  }).filter(Boolean).slice(0, 12);
+}
+
 app.patch("/api/users/me", async (c) => {
   const user = await fullCurrentUser(c);
   if (!user) return c.json({ error: "Not authenticated" }, 401);
@@ -1236,10 +1411,11 @@ app.patch("/api/users/me", async (c) => {
   const handle = normalizeHandle(stringField(body.handle || user.handle));
   const displayName = handle;
   const bio = stringField(body.bio || "");
-  const links = Array.isArray(body.links) ? body.links : parseJson(String(body.links_json || body.links || "[]"), []);
+  const links = normalizedProfileLinks(body.links ?? body.links_json);
   await c.env.DB.prepare(
     "UPDATE users SET display_name = ?, handle = ?, bio = ?, links_json = ?, updated_at = ? WHERE id = ?",
   ).bind(displayName, handle, bio, jsonText(links), now(), user.id).run();
+  await reindexUserTags(c.env.DB, user.id);
   await insertEvent(c.env, "profile.updated", user.id, "profile", user.id);
   const updated = await getUserById(c.env.DB, user.id);
   return c.json({ user: publicUser(updated!, await getTags(c.env.DB, user.id)) });
@@ -1290,6 +1466,7 @@ app.post("/api/users/me/medium-tags", async (c) => {
   for (const tag of [...new Set(tags)]) {
     await c.env.DB.prepare("INSERT INTO medium_tags (user_id, tag, created_at) VALUES (?, ?, ?)").bind(user.id, tag, now()).run();
   }
+  await reindexUserTags(c.env.DB, user.id);
   await insertEvent(c.env, "profile.updated", user.id, "profile", user.id);
   return c.json({ medium_tags: [...new Set(tags)] });
 });
@@ -1308,9 +1485,9 @@ app.post("/api/markdown-assets", async (c) => {
   if (targetId && targetType !== "draft" && !(await canViewTarget(c.env.DB, user, targetType, targetId))) return c.json({ error: "Forbidden" }, 403);
   const id = ulid();
   const base = `markdown-assets/${user.id}/${id}`;
-  const key = `${base}/original-${file.name || "image"}`;
-  const previewKey = `${base}/preview-${previewFile.name || file.name || "image"}`;
-  const thumbnailKey = `${base}/thumbnail-${thumbnailFile.name || previewFile.name || file.name || "image"}`;
+  const key = `${base}/original`;
+  const previewKey = `${base}/preview`;
+  const thumbnailKey = `${base}/thumbnail`;
   const timestamp = now();
   await putR2File(c.env.MEDIA, key, file, { owner: user.id, kind: "markdown_asset", target_type: targetType, target_id: targetId || "", variant: "original" });
   await putR2File(c.env.MEDIA, previewKey, previewFile, { owner: user.id, kind: "markdown_asset", target_type: targetType, target_id: targetId || "", variant: "preview" });
@@ -1327,7 +1504,7 @@ app.post("/api/markdown-assets", async (c) => {
     targetId,
     key,
     file.type || "application/octet-stream",
-    file.name || "image",
+    `asset-${id}`,
     timestamp,
     previewKey,
     previewFile.type || file.type || "application/octet-stream",
@@ -1375,8 +1552,9 @@ app.post("/api/galleries", async (c) => {
        VALUES (?, ?, 'owner', 1, 1, 1, 1, 1, ?, ?)`,
     ).bind(id, user.id, timestamp, timestamp),
   ]);
-  await insertEvent(c.env, "gallery.created", user.id, "gallery", id);
   const gallery = await c.env.DB.prepare("SELECT * FROM galleries WHERE id = ?").bind(id).first<GalleryRow>();
+  await reindexGalleryTags(c.env.DB, id, gallery);
+  await insertEvent(c.env, "gallery.created", user.id, "gallery", id);
   return c.json({ gallery: await serializeGallery(c.env, user, gallery!) }, 201);
 });
 
@@ -1384,13 +1562,7 @@ app.get("/api/galleries", async (c) => {
   const user = currentUser(c);
   const cache = await prepareApiCache(c, "galleries");
   if (cache.fresh) return apiNotModified(cache);
-  const rows = await c.env.DB.prepare("SELECT * FROM galleries ORDER BY updated_at DESC LIMIT 200").all<GalleryRow>();
-  const galleries = [];
-  for (const gallery of rows.results) {
-    const serialized = await serializeGallery(c.env, user, gallery);
-    if (serialized.capabilities.view) galleries.push(serialized);
-  }
-  return cacheableJson(c, cache, { galleries });
+  return cacheableJson(c, cache, { galleries: await visibleGalleries(c, user) });
 });
 
 app.post("/api/galleries/:id/pin", async (c) => {
@@ -1415,11 +1587,12 @@ app.delete("/api/galleries/:id/pin", async (c) => {
 });
 
 app.get("/api/galleries/:id", async (c) => {
+  const user = currentUser(c);
+  const includeComments = stringField(c.req.query("include")).split(",").map((part) => part.trim().toLowerCase()).includes("comments");
+  const cache = await prepareApiCache(c, includeComments ? `gallery:${c.req.param("id")}:comments` : `gallery:${c.req.param("id")}`);
+  if (cache.fresh) return apiNotModified(cache);
   const gate = await assertGalleryCapability(c, c.req.param("id"), "view");
   if (!gate.ok) return gate.response;
-  const user = currentUser(c);
-  const cache = await prepareApiCache(c, `gallery:${c.req.param("id")}`);
-  if (cache.fresh) return apiNotModified(cache);
   const gallery = await c.env.DB.prepare("SELECT * FROM galleries WHERE id = ?").bind(c.req.param("id")).first<GalleryRow>();
   if (!gallery) return c.json({ error: "Not found" }, 404);
   const [members, works] = await Promise.all([
@@ -1475,11 +1648,13 @@ app.get("/api/galleries/:id", async (c) => {
        ORDER BY work_galleries.updated_at DESC, works.updated_at DESC`,
     ).bind(user.id, user.id, user.id, gallery.id).all<GalleryWorkListRow>(),
   ]);
-  return cacheableJson(c, cache, {
+  const response: Record<string, unknown> = {
     gallery: await serializeGallery(c.env, user, gallery),
     members: members.results,
     works: await Promise.all(works.results.map((work) => serializeGalleryWorkListItem(c.env, user, work, gate.caps))),
-  });
+  };
+  if (includeComments) response.comments = await commentsForTarget(c, user, "gallery", gallery.id);
+  return cacheableJson(c, cache, response);
 });
 
 app.get("/api/galleries/:id/crosspost-candidates", async (c) => {
@@ -1560,13 +1735,14 @@ app.patch("/api/galleries/:id", async (c) => {
   await c.env.DB.prepare(
     "UPDATE galleries SET title = ?, description = ?, ownership_type = ?, visibility = ?, whole_server_upload = ?, cover_work_id = ?, cover_version_id = ?, updated_at = ? WHERE id = ?",
   ).bind(title, description, ownership, visibility, wholeServerUpload ? 1 : 0, coverWorkId, coverVersion, now(), id).run();
+  const gallery = await c.env.DB.prepare("SELECT * FROM galleries WHERE id = ?").bind(id).first<GalleryRow>();
+  await reindexGalleryTags(c.env.DB, id, gallery);
   await insertEvent(c.env, "gallery.updated", currentUser(c).id, "gallery", id, null, null, {
     title,
     previous_title: before.title,
     description_changed: description !== before.description,
   });
   if (visibility !== before.visibility) await insertEvent(c.env, "gallery.visibility_changed", currentUser(c).id, "gallery", id, null, null, { from: before.visibility, to: visibility });
-  const gallery = await c.env.DB.prepare("SELECT * FROM galleries WHERE id = ?").bind(id).first<GalleryRow>();
   return c.json({ gallery: await serializeGallery(c.env, currentUser(c), gallery!) });
 });
 
@@ -1575,6 +1751,7 @@ app.delete("/api/galleries/:id", async (c) => {
   const gate = await assertGalleryCapability(c, id, "manage_collaborators");
   if (!gate.ok) return gate.response;
   await c.env.DB.prepare("DELETE FROM galleries WHERE id = ?").bind(id).run();
+  await removeTagIndexForTarget(c.env.DB, "gallery", id);
   return c.json({ ok: true });
 });
 
@@ -1674,13 +1851,13 @@ async function createWorkVersion(c: Ctx, work: WorkRow, body: Record<string, unk
     const previewFile = fileField(body.preview || body.preview_file || body.previewFile) || file;
     const thumbnailFile = fileField(body.thumbnail || body.thumbnail_file || body.thumbnailFile) || previewFile;
     const base = `works/${work.id}/versions/${id}`;
-    originalKey = `${base}/original-${file.name || "image"}`;
-    previewKey = `${base}/preview-${previewFile.name || file.name || "image"}`;
-    thumbnailKey = `${base}/thumbnail-${thumbnailFile.name || previewFile.name || file.name || "image"}`;
+    originalKey = `${base}/original`;
+    previewKey = `${base}/preview`;
+    thumbnailKey = `${base}/thumbnail`;
     originalType = file.type || "application/octet-stream";
     previewType = previewFile.type || originalType;
     thumbnailType = thumbnailFile.type || previewType;
-    originalFilename = file.name || "image";
+    originalFilename = `work-${work.id}-version-${id}`;
     await putR2File(c.env.MEDIA, originalKey, file, { owner: work.created_by, work: work.id, variant: "original" });
     await putR2File(c.env.MEDIA, previewKey, previewFile, { owner: work.created_by, work: work.id, variant: "preview" });
     await putR2File(c.env.MEDIA, thumbnailKey, thumbnailFile, { owner: work.created_by, work: work.id, variant: "thumbnail" });
@@ -1814,6 +1991,7 @@ app.post("/api/galleries/:galleryId/works", async (c) => {
       "SELECT * FROM works WHERE created_by = ? AND client_upload_key = ? AND deleted_at IS NULL",
     ).bind(user.id, clientUploadKey).first<WorkRow>();
     if (existing) {
+      await touchUserActivity(c, user.id);
       return c.json({ work: await serializeWork(c.env, user, existing), duplicate: true, collaborator_results: [] });
     }
   }
@@ -1846,7 +2024,10 @@ app.post("/api/galleries/:galleryId/works", async (c) => {
       const existing = await c.env.DB.prepare(
         "SELECT * FROM works WHERE created_by = ? AND client_upload_key = ? AND deleted_at IS NULL",
       ).bind(user.id, clientUploadKey).first<WorkRow>();
-      if (existing) return c.json({ work: await serializeWork(c.env, user, existing), duplicate: true, collaborator_results: [] });
+      if (existing) {
+        await touchUserActivity(c, user.id);
+        return c.json({ work: await serializeWork(c.env, user, existing), duplicate: true, collaborator_results: [] });
+      }
     }
     return c.json({ error: error instanceof Error ? error.message : "Could not create work" }, 500);
   }
@@ -1858,13 +2039,16 @@ app.post("/api/galleries/:galleryId/works", async (c) => {
     await createWorkVersion(c, work, body);
   } catch (error) {
     await c.env.DB.prepare("DELETE FROM works WHERE id = ?").bind(id).run();
+    await removeTagIndexForTarget(c.env.DB, "work", id);
     return c.json({ error: error instanceof Error ? error.message : "Could not create work version" }, 400);
   }
+  await reindexWorkTags(c.env.DB, id);
   await insertEvent(c.env, "work.created", user.id, "work", id, "gallery", galleryId);
   const collaboratorResults = [];
   for (let index = 0; index < collaboratorInputs.length; index += 1) {
     collaboratorResults.push(await createWorkCollaborator(c, id, { ...collaboratorInputs[index], credit_order: index }));
   }
+  await touchUserActivity(c, user.id, timestamp);
   return c.json({ work: await serializeWork(c.env, user, (await getWork(c.env.DB, id))!), collaborator_results: collaboratorResults }, 201);
 });
 
@@ -1879,8 +2063,9 @@ app.get("/api/works/:id", async (c) => {
      WHERE work_collaborators.work_id = ?
      ORDER BY work_collaborators.credit_order, work_collaborators.display_name`,
   ).bind(gate.work!.id).all();
+  const currentVersion = versions.results.find((version) => version.id === gate.work!.current_version_id) || null;
   return c.json({
-    work: await serializeWork(c.env, currentUser(c), gate.work!),
+    work: await serializeWork(c.env, currentUser(c), gate.work!, { capabilityResult: gate, currentVersion, leanGalleries: true }),
     versions: await Promise.all(versions.results.map((version) => serializeVersion(c.env, version))),
     collaborators: collaborators.results,
   });
@@ -1941,6 +2126,7 @@ app.patch("/api/works/:id", async (c) => {
     c.env.DB.prepare("UPDATE work_galleries SET updated_at = ? WHERE work_id = ?").bind(timestamp, work.id),
     c.env.DB.prepare("UPDATE galleries SET updated_at = ? WHERE id IN (SELECT gallery_id FROM work_galleries WHERE work_id = ?)").bind(timestamp, work.id),
   ]);
+  await reindexWorkTags(c.env.DB, work.id);
   await insertEvent(c.env, "work.updated", currentUser(c).id, "work", work.id);
   return c.json({ work: await serializeWork(c.env, currentUser(c), (await getWork(c.env.DB, work.id))!) });
 });
@@ -1986,6 +2172,7 @@ app.delete("/api/works/:id", async (c) => {
     c.env.DB.prepare("UPDATE galleries SET updated_at = ? WHERE id IN (SELECT gallery_id FROM work_galleries WHERE work_id = ?)").bind(timestamp, c.req.param("id")),
     c.env.DB.prepare("DELETE FROM work_galleries WHERE work_id = ?").bind(c.req.param("id")),
   ]);
+  await removeTagIndexForTarget(c.env.DB, "work", c.req.param("id"));
   await insertEvent(c.env, "work.updated", currentUser(c).id, "work", c.req.param("id"), null, null, { deleted: true });
   return c.json({ ok: true });
 });
@@ -2133,23 +2320,19 @@ app.post("/api/comments", async (c) => {
   const id = ulid();
   const parentId = stringField(body.parent_comment_id || body.parentCommentId, "") || null;
   const commentBody = stringField(body.body);
+  const timestamp = now();
   await c.env.DB.prepare(
     `INSERT INTO comments (id, target_type, target_id, parent_comment_id, author_id, body, created_at, updated_at)
      VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-  ).bind(id, targetType, targetId, parentId, user.id, commentBody, now(), now()).run();
+  ).bind(id, targetType, targetId, parentId, user.id, commentBody, timestamp, timestamp).run();
+  await reindexCommentTags(c.env.DB, id, { id, body: commentBody, updated_at: timestamp, deleted_at: null });
   const feedbackCleared = await clearFeedbackRequestForCommentTarget(c.env.DB, targetType, targetId);
   const eventType = parentId ? "comment.replied" : "comment.created";
   await insertEvent(c.env, eventType, user.id, "comment", id, targetType, targetId, { parent_comment_id: parentId, body: commentBody });
   return c.json({ id, feedback_cleared: feedbackCleared }, 201);
 });
 
-app.get("/api/comments", async (c) => {
-  const targetType = stringField(c.req.query("target_type") || c.req.query("targetType"));
-  const targetId = stringField(c.req.query("target_id") || c.req.query("targetId"));
-  if (!targetType || !targetId) return c.json({ error: "target_type and target_id are required" }, 400);
-  if (!(await canViewTarget(c.env.DB, currentUser(c), targetType, targetId))) return c.json({ error: "Forbidden" }, 403);
-  const cache = await prepareApiCache(c, `comments:${targetType}:${targetId}`);
-  if (cache.fresh) return apiNotModified(cache);
+async function commentsForTarget(c: Ctx, user: AuthenticatedUser, targetType: string, targetId: string) {
   const rows = await c.env.DB.prepare(
     `SELECT comments.*, users.display_name, users.handle,
             parent_comments.body AS parent_body,
@@ -2167,15 +2350,24 @@ app.get("/api/comments", async (c) => {
      WHERE comments.target_type = ? AND comments.target_id = ? AND comments.deleted_at IS NULL
      GROUP BY comments.id
      ORDER BY comments.created_at ASC`,
-  ).bind(currentUser(c).id, targetType, targetId).all<Record<string, unknown> & { heart_count: number; hearted_by_me: number | null }>();
-  const comments = rows.results.map((comment) => ({
+  ).bind(user.id, targetType, targetId).all<Record<string, unknown> & { heart_count: number; hearted_by_me: number | null }>();
+  return rows.results.map((comment) => ({
     ...comment,
     reactions: {
       heart_count: comment.heart_count || 0,
       hearted_by_me: !!comment.hearted_by_me,
     },
   }));
-  return cacheableJson(c, cache, { comments });
+}
+
+app.get("/api/comments", async (c) => {
+  const targetType = stringField(c.req.query("target_type") || c.req.query("targetType"));
+  const targetId = stringField(c.req.query("target_id") || c.req.query("targetId"));
+  if (!targetType || !targetId) return c.json({ error: "target_type and target_id are required" }, 400);
+  if (!(await canViewTarget(c.env.DB, currentUser(c), targetType, targetId))) return c.json({ error: "Forbidden" }, 403);
+  const cache = await prepareApiCache(c, `comments:${targetType}:${targetId}`);
+  if (cache.fresh) return apiNotModified(cache);
+  return cacheableJson(c, cache, { comments: await commentsForTarget(c, currentUser(c), targetType, targetId) });
 });
 
 app.post("/api/reactions/:targetType/:targetId/heart", async (c) => {
@@ -2206,31 +2398,40 @@ app.delete("/api/reactions/:targetType/:targetId/heart", async (c) => {
   return c.json({ reactions: await reactionSummary(c.env.DB, user, targetType, targetId) });
 });
 
-app.get("/api/tags/popular", async (c) => {
-  const user = currentUser(c);
-  const cache = await prepareApiCache(c, "tags:popular");
-  if (cache.fresh) return apiNotModified(cache);
+function tagVisibleGallerySql(alias: string) {
+  return `(${alias}.owner_user_id = ? OR ${alias}.created_by = ? OR ${alias}.visibility = 'server_public' OR ${alias}.whole_server_upload = 1 OR EXISTS (SELECT 1 FROM gallery_members WHERE gallery_members.gallery_id = ${alias}.id AND gallery_members.user_id = ? AND gallery_members.can_view = 1))`;
+}
+
+function tagVisibleGalleryArgs(user: AuthenticatedUser) {
+  return [user.id, user.id, user.id];
+}
+
+function tagVisibleWorkSql(alias: string) {
+  return `(${alias}.created_by = ? OR EXISTS (SELECT 1 FROM work_collaborators WHERE work_collaborators.work_id = ${alias}.id AND work_collaborators.user_id = ?) OR EXISTS (SELECT 1 FROM work_galleries JOIN galleries AS tag_work_gallery ON tag_work_gallery.id = work_galleries.gallery_id WHERE work_galleries.work_id = ${alias}.id AND ${tagVisibleGallerySql("tag_work_gallery")}))`;
+}
+
+function tagVisibleWorkArgs(user: AuthenticatedUser) {
+  return [user.id, user.id, ...tagVisibleGalleryArgs(user)];
+}
+
+async function legacyPopularTagsForUser(c: Ctx, user: AuthenticatedUser) {
   const cutoff = new Date(Date.now() - POPULAR_TAG_WINDOW_DAYS * 24 * 60 * 60 * 1000).toISOString();
-  const visibleGallerySql = (alias: string) => `(${alias}.owner_user_id = ? OR ${alias}.created_by = ? OR ${alias}.visibility = 'server_public' OR ${alias}.whole_server_upload = 1 OR EXISTS (SELECT 1 FROM gallery_members WHERE gallery_members.gallery_id = ${alias}.id AND gallery_members.user_id = ? AND gallery_members.can_view = 1))`;
-  const visibleGalleryArgs = () => [user.id, user.id, user.id];
-  const visibleWorkSql = (alias: string) => `(${alias}.created_by = ? OR EXISTS (SELECT 1 FROM work_collaborators WHERE work_collaborators.work_id = ${alias}.id AND work_collaborators.user_id = ?) OR EXISTS (SELECT 1 FROM work_galleries JOIN galleries AS tag_work_gallery ON tag_work_gallery.id = work_galleries.gallery_id WHERE work_galleries.work_id = ${alias}.id AND ${visibleGallerySql("tag_work_gallery")}))`;
-  const visibleWorkArgs = () => [user.id, user.id, ...visibleGalleryArgs()];
   const tags = new Map<string, { tag: string; count: number; last_used_at: string }>();
   const [galleries, works, comments, profileTags] = await Promise.all([
     c.env.DB.prepare(
       `SELECT title, description, updated_at
        FROM galleries
-       WHERE updated_at >= ? AND ${visibleGallerySql("galleries")}
+       WHERE updated_at >= ? AND ${tagVisibleGallerySql("galleries")}
        ORDER BY updated_at DESC
        LIMIT 160`,
-    ).bind(cutoff, ...visibleGalleryArgs()).all<{ title: string; description: string; updated_at: string }>(),
+    ).bind(cutoff, ...tagVisibleGalleryArgs(user)).all<{ title: string; description: string; updated_at: string }>(),
     c.env.DB.prepare(
       `SELECT title, description, updated_at
        FROM works
-       WHERE deleted_at IS NULL AND updated_at >= ? AND ${visibleWorkSql("works")}
+       WHERE deleted_at IS NULL AND updated_at >= ? AND ${tagVisibleWorkSql("works")}
        ORDER BY updated_at DESC
        LIMIT 240`,
-    ).bind(cutoff, ...visibleWorkArgs()).all<{ title: string; description: string; updated_at: string }>(),
+    ).bind(cutoff, ...tagVisibleWorkArgs(user)).all<{ title: string; description: string; updated_at: string }>(),
     c.env.DB.prepare(
       `SELECT body, created_at
        FROM comments
@@ -2238,12 +2439,12 @@ app.get("/api/tags/popular", async (c) => {
          AND created_at >= ?
          AND (
            target_type = 'profile'
-           OR (target_type = 'gallery' AND EXISTS (SELECT 1 FROM galleries WHERE galleries.id = comments.target_id AND ${visibleGallerySql("galleries")}))
-           OR (target_type = 'work' AND EXISTS (SELECT 1 FROM works WHERE works.id = comments.target_id AND works.deleted_at IS NULL AND ${visibleWorkSql("works")}))
+           OR (target_type = 'gallery' AND EXISTS (SELECT 1 FROM galleries WHERE galleries.id = comments.target_id AND ${tagVisibleGallerySql("galleries")}))
+           OR (target_type = 'work' AND EXISTS (SELECT 1 FROM works WHERE works.id = comments.target_id AND works.deleted_at IS NULL AND ${tagVisibleWorkSql("works")}))
          )
        ORDER BY created_at DESC
        LIMIT 240`,
-    ).bind(cutoff, ...visibleGalleryArgs(), ...visibleWorkArgs()).all<{ body: string; created_at: string }>(),
+    ).bind(cutoff, ...tagVisibleGalleryArgs(user), ...tagVisibleWorkArgs(user)).all<{ body: string; created_at: string }>(),
     c.env.DB.prepare(
       `SELECT tag, created_at
        FROM medium_tags
@@ -2258,16 +2459,102 @@ app.get("/api/tags/popular", async (c) => {
   for (const row of comments.results) recordTextTags(tags, row.body || "", row.created_at);
   for (const row of profileTags.results) recordTagUse(tags, row.tag, row.created_at);
 
-  const sorted = Array.from(tags.values())
+  return Array.from(tags.values())
     .sort((a, b) => b.count - a.count || b.last_used_at.localeCompare(a.last_used_at) || a.tag.localeCompare(b.tag))
     .slice(0, 5);
-  return cacheableJson(c, cache, { window_days: POPULAR_TAG_WINDOW_DAYS, tags: sorted });
+}
+
+async function indexedPopularTagsForUser(c: Ctx, user: AuthenticatedUser) {
+  const cutoff = new Date(Date.now() - POPULAR_TAG_WINDOW_DAYS * 24 * 60 * 60 * 1000).toISOString();
+  const rows = await c.env.DB.prepare(
+    `WITH visible_tags AS (
+       SELECT tag_index.tag, tag_index.updated_at
+       FROM tag_index
+       JOIN galleries ON galleries.id = tag_index.target_id
+       WHERE tag_index.target_type = 'gallery'
+         AND tag_index.updated_at >= ?
+         AND ${tagVisibleGallerySql("galleries")}
+
+       UNION ALL
+
+       SELECT tag_index.tag, tag_index.updated_at
+       FROM tag_index
+       JOIN works ON works.id = tag_index.target_id
+       WHERE tag_index.target_type = 'work'
+         AND tag_index.updated_at >= ?
+         AND works.deleted_at IS NULL
+         AND ${tagVisibleWorkSql("works")}
+
+       UNION ALL
+
+       SELECT tag_index.tag, tag_index.updated_at
+       FROM tag_index
+       JOIN comments ON comments.id = tag_index.target_id
+       WHERE tag_index.target_type = 'comment'
+         AND tag_index.updated_at >= ?
+         AND comments.deleted_at IS NULL
+         AND (
+           comments.target_type = 'profile'
+           OR (comments.target_type = 'gallery' AND EXISTS (SELECT 1 FROM galleries WHERE galleries.id = comments.target_id AND ${tagVisibleGallerySql("galleries")}))
+           OR (comments.target_type = 'work' AND EXISTS (SELECT 1 FROM works WHERE works.id = comments.target_id AND works.deleted_at IS NULL AND ${tagVisibleWorkSql("works")}))
+         )
+
+       UNION ALL
+
+       SELECT tag_index.tag, tag_index.updated_at
+       FROM tag_index
+       JOIN users ON users.id = tag_index.target_id
+       WHERE tag_index.target_type = 'user'
+         AND tag_index.source = 'medium_tags'
+         AND tag_index.updated_at >= ?
+         AND users.disabled_at IS NULL
+     )
+     SELECT tag, COUNT(*) AS count, MAX(updated_at) AS last_used_at
+     FROM visible_tags
+     GROUP BY tag
+     ORDER BY count DESC, last_used_at DESC, tag COLLATE NOCASE
+     LIMIT 5`,
+  ).bind(
+    cutoff,
+    ...tagVisibleGalleryArgs(user),
+    cutoff,
+    ...tagVisibleWorkArgs(user),
+    cutoff,
+    ...tagVisibleGalleryArgs(user),
+    ...tagVisibleWorkArgs(user),
+    cutoff,
+  ).all<{ tag: string; count: number; last_used_at: string }>();
+
+  return rows.results.map((row) => ({
+    tag: row.tag,
+    count: Number(row.count || 0),
+    last_used_at: row.last_used_at,
+  }));
+}
+
+async function popularTagsForUser(c: Ctx, user: AuthenticatedUser) {
+  if (await tagIndexReady(c.env.DB)) return indexedPopularTagsForUser(c, user);
+  return legacyPopularTagsForUser(c, user);
+}
+
+app.get("/api/tags/popular", async (c) => {
+  const user = currentUser(c);
+  const cache = await prepareApiCache(c, "tags:popular");
+  if (cache.fresh) return apiNotModified(cache);
+  return cacheableJson(c, cache, { window_days: POPULAR_TAG_WINDOW_DAYS, tags: await popularTagsForUser(c, user) });
 });
 
 app.get("/api/tags/:tag", async (c) => {
   const user = currentUser(c);
   const tag = normalizeTag(c.req.param("tag"));
   if (!tag) return c.json({ error: "Tag is required" }, 400);
+  const cache = await prepareApiCache(c, `tag:${tag}`);
+  if (cache.fresh) return apiNotModified(cache);
+  const data = await tagDetailForUser(c, user, tag);
+  return cacheableJson(c, cache, data);
+});
+
+async function legacyTagDetailForUser(c: Ctx, user: AuthenticatedUser, tag: string) {
   const pattern = `%#${tag}%`;
   const barePattern = `%${tag}%`;
 
@@ -2326,8 +2613,86 @@ app.get("/api/tags/:tag", async (c) => {
     }
   }
 
-  return c.json({ tag, galleries, works, members, comments });
-});
+  return { tag, galleries, works, members, comments };
+}
+
+async function indexedTagDetailForUser(c: Ctx, user: AuthenticatedUser, tag: string) {
+  const barePattern = `%${tag}%`;
+
+  const galleryRows = await c.env.DB.prepare(
+    `SELECT galleries.*
+     FROM tag_index
+     JOIN galleries ON galleries.id = tag_index.target_id
+     WHERE tag_index.tag = ?
+       AND tag_index.target_type = 'gallery'
+       AND ${tagVisibleGallerySql("galleries")}
+     GROUP BY galleries.id
+     ORDER BY MAX(tag_index.updated_at) DESC
+     LIMIT 80`,
+  ).bind(tag, ...tagVisibleGalleryArgs(user)).all<GalleryRow>();
+  const galleries = await Promise.all(galleryRows.results.map((gallery) => serializeGallery(c.env, user, gallery)));
+
+  const workRows = await c.env.DB.prepare(
+    `SELECT works.*
+     FROM tag_index
+     JOIN works ON works.id = tag_index.target_id
+     WHERE tag_index.tag = ?
+       AND tag_index.target_type = 'work'
+       AND works.deleted_at IS NULL
+       AND ${tagVisibleWorkSql("works")}
+     GROUP BY works.id
+     ORDER BY MAX(tag_index.updated_at) DESC
+     LIMIT 120`,
+  ).bind(tag, ...tagVisibleWorkArgs(user)).all<WorkRow>();
+  const works = await Promise.all(workRows.results.map((work) => serializeWork(c.env, user, work)));
+
+  const memberRows = await c.env.DB.prepare(
+    `SELECT DISTINCT users.*
+     FROM users
+     LEFT JOIN tag_index ON tag_index.target_type = 'user'
+       AND tag_index.target_id = users.id
+       AND tag_index.tag = ?
+     WHERE users.disabled_at IS NULL
+       AND (tag_index.tag IS NOT NULL OR lower(users.handle) LIKE ?)
+     ORDER BY users.handle COLLATE NOCASE
+     LIMIT 80`,
+  ).bind(tag, barePattern).all<AppUser>();
+  const members = [];
+  for (const member of memberRows.results) {
+    members.push(publicUser(member, await getTags(c.env.DB, member.id)));
+  }
+
+  const commentRows = await c.env.DB.prepare(
+    `SELECT comments.*, users.display_name, users.handle,
+            parent_comments.body AS parent_body,
+            parent_users.display_name AS parent_display_name,
+            parent_users.handle AS parent_handle
+     FROM tag_index
+     JOIN comments ON comments.id = tag_index.target_id
+     JOIN users ON users.id = comments.author_id
+     LEFT JOIN comments AS parent_comments ON parent_comments.id = comments.parent_comment_id AND parent_comments.deleted_at IS NULL
+     LEFT JOIN users AS parent_users ON parent_users.id = parent_comments.author_id
+     WHERE tag_index.tag = ?
+       AND tag_index.target_type = 'comment'
+       AND comments.deleted_at IS NULL
+     ORDER BY comments.created_at DESC
+     LIMIT 240`,
+  ).bind(tag).all<{ target_type: string; target_id: string }>();
+  const comments = [];
+  for (const comment of commentRows.results as Array<{ id: string; target_type: string; target_id: string }>) {
+    if (comments.length >= 120) break;
+    if (await canViewTarget(c.env.DB, user, comment.target_type, comment.target_id)) {
+      comments.push({ ...comment, reactions: await reactionSummary(c.env.DB, user, "comment", comment.id) });
+    }
+  }
+
+  return { tag, galleries, works, members, comments };
+}
+
+async function tagDetailForUser(c: Ctx, user: AuthenticatedUser, tag: string) {
+  if (await tagIndexReady(c.env.DB)) return indexedTagDetailForUser(c, user, tag);
+  return legacyTagDetailForUser(c, user, tag);
+}
 
 app.patch("/api/comments/:id", async (c) => {
   const user = currentUser(c);
@@ -2335,7 +2700,9 @@ app.patch("/api/comments/:id", async (c) => {
   if (!comment) return c.json({ error: "Not found" }, 404);
   if (comment.author_id !== user.id) return c.json({ error: "Forbidden" }, 403);
   const body = await readBody(c);
-  await c.env.DB.prepare("UPDATE comments SET body = ?, updated_at = ? WHERE id = ?").bind(stringField(body.body), now(), c.req.param("id")).run();
+  const timestamp = now();
+  await c.env.DB.prepare("UPDATE comments SET body = ?, updated_at = ? WHERE id = ?").bind(stringField(body.body), timestamp, c.req.param("id")).run();
+  await reindexCommentTags(c.env.DB, c.req.param("id"), { id: c.req.param("id"), body: stringField(body.body), updated_at: timestamp, deleted_at: null });
   return c.json({ ok: true });
 });
 
@@ -2345,13 +2712,11 @@ app.delete("/api/comments/:id", async (c) => {
   if (!comment) return c.json({ error: "Not found" }, 404);
   if (comment.author_id !== user.id) return c.json({ error: "Forbidden" }, 403);
   await c.env.DB.prepare("UPDATE comments SET deleted_at = ?, updated_at = ? WHERE id = ?").bind(now(), now(), c.req.param("id")).run();
+  await removeTagIndexForTarget(c.env.DB, "comment", c.req.param("id"));
   return c.json({ ok: true });
 });
 
-app.get("/api/activity", async (c) => {
-  const user = currentUser(c);
-  const cache = await prepareApiCache(c, "activity");
-  if (cache.fresh) return apiNotModified(cache);
+async function activityEventsForUser(c: Ctx, user: AuthenticatedUser, limit = 60) {
   const rows = await c.env.DB.prepare(
     `WITH recent AS (
        SELECT * FROM domain_events
@@ -2367,18 +2732,21 @@ app.get("/api/activity", async (c) => {
     visibleWorkIds(c.env.DB, user, workIds),
   ]);
   const thumbnailCache = new Map<string, Promise<string | null>>();
-  const visibleRows = rows.results.filter((event) => joinedEventVisible(user, event, galleries, works)).slice(0, 60);
-  const events = await Promise.all(visibleRows.map((event) => activityEntryFromJoinedRow(c.env, user, event, thumbnailCache)));
-  return cacheableJson(c, cache, { events });
+  const visibleRows = rows.results.filter((event) => joinedEventVisible(user, event, galleries, works)).slice(0, limit);
+  return Promise.all(visibleRows.map((event) => activityEntryFromJoinedRow(c.env, user, event, thumbnailCache)));
+}
+
+app.get("/api/activity", async (c) => {
+  const user = currentUser(c);
+  const cache = await prepareApiCache(c, "activity");
+  if (cache.fresh) return apiNotModified(cache);
+  return cacheableJson(c, cache, { events: await activityEventsForUser(c, user) });
 });
 
-app.get("/api/notifications", async (c) => {
-  const user = currentUser(c);
-  const cache = await prepareApiCache(c, "notifications");
-  if (cache.fresh) return apiNotModified(cache);
-  const visibleRows = (await visibleNotificationRows(c, user, { limit: 200 })).slice(0, 100);
+async function notificationsForUser(c: Ctx, user: AuthenticatedUser, limit = 100) {
+  const visibleRows = (await visibleNotificationRows(c, user, { limit: 200 })).slice(0, limit);
   const thumbnailCache = new Map<string, Promise<string | null>>();
-  const notifications = await Promise.all(visibleRows.map(async (row) => {
+  return Promise.all(visibleRows.map(async (row) => {
     const activity = await activityEntryFromJoinedRow(c.env, user, row, thumbnailCache).catch(() => null);
     return {
       id: row.notification_id,
@@ -2393,7 +2761,13 @@ app.get("/api/notifications", async (c) => {
       comment_preview: activity?.comment_preview || null,
     };
   }));
-  return cacheableJson(c, cache, { notifications });
+}
+
+app.get("/api/notifications", async (c) => {
+  const user = currentUser(c);
+  const cache = await prepareApiCache(c, "notifications");
+  if (cache.fresh) return apiNotModified(cache);
+  return cacheableJson(c, cache, { notifications: await notificationsForUser(c, user) });
 });
 
 type VisibleNotificationOptions = {

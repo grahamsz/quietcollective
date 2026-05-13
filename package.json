@@ -19,8 +19,8 @@
     "dev": "wrangler dev",
     "deploy": "npm run verify && npm run d1:migrations:apply:remote && wrangler deploy",
     "types": "wrangler types",
-    "d1:migrations:apply": "wrangler d1 migrations apply quietcollective",
-    "d1:migrations:apply:remote": "wrangler d1 migrations apply quietcollective --remote"
+    "d1:migrations:apply": "wrangler d1 migrations apply DB",
+    "d1:migrations:apply:remote": "wrangler d1 migrations apply DB --remote"
   },
   "dependencies": {
     "bcryptjs": "^3.0.3",

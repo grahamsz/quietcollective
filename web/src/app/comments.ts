@@ -66,7 +66,8 @@ function highlightLinkedComment() {
 /** Renders a generic comment list and form for gallery and profile pages. */
 function commentsPanel(targetType, targetId, comments) {
   const title = targetType === "gallery" ? "Comments on Gallery" : "Comments";
-  return panel(title, `<div class="grid">${(comments || []).map((comment) => commentArticle(comment)).join("") || empty("No comments yet.")}<form class="form comment-form" data-target-type="${escapeHtml(targetType)}" data-target-id="${escapeHtml(targetId)}"><input type="hidden" name="parent_comment_id"><div class="replying-to" data-replying-to hidden><span></span>${button("Cancel", "button ghost", "type=button data-cancel-reply")}</div><div class="form-row"><label>Add comment</label><textarea name="body" required data-markdown-editor data-target-type="${escapeHtml(targetType)}" data-target-id="${escapeHtml(targetId)}"></textarea>${markdownHint()}</div>${button("Post comment", "button primary", "type=submit")}</form></div>`);
+  const label = targetType === "gallery" ? "Add Gallery Comment" : "Add comment";
+  return panel(title, `<div class="grid">${(comments || []).map((comment) => commentArticle(comment)).join("") || empty("No comments yet.")}<form class="form comment-form" data-target-type="${escapeHtml(targetType)}" data-target-id="${escapeHtml(targetId)}"><input type="hidden" name="parent_comment_id"><div class="replying-to" data-replying-to hidden><span></span>${button("Cancel", "button ghost", "type=button data-cancel-reply")}</div><div class="form-row"><label>${escapeHtml(label)}</label><textarea name="body" required data-markdown-editor data-target-type="${escapeHtml(targetType)}" data-target-id="${escapeHtml(targetId)}"></textarea>${markdownHint()}</div>${button("Post comment", "button primary", "type=submit")}</form></div>`);
 }
 
 /** Renders work comments with version badges for the work detail page. */

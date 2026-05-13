@@ -29,13 +29,21 @@ function Avatar({ user, className = "avatar" }) {
   return <span class={className} aria-hidden="true">{source.slice(0, 2).toUpperCase()}</span>;
 }
 
+function profileLinks(user) {
+  return (user?.links || [])
+    .map((link) => ({
+      site: link?.site || link?.label || link?.title || "",
+      url: link?.url || link?.href || (typeof link === "string" ? link : ""),
+    }))
+    .filter((link) => link.site || link.url);
+}
+
 /** Renders the signed-in dashboard used by the `/` route. */
 export function HomeView({ instanceName, subtitle, galleries, works, activityEvents, members }) {
   return (
     <section class="view home-view">
       <div class="view-header">
         <div>
-          <p class="eyebrow">Recently Updated</p>
           <h1>{instanceName || "QuietCollective"}</h1>
           <p class="lede">{subtitle || "Private image galleries, critique, collaborator credits, and member profiles for logged-in members."}</p>
         </div>
@@ -79,7 +87,8 @@ export function MembersIndexView({ members }) {
 }
 
 /** Renders a member profile route and its profile comment panel. */
-export function MemberProfileView({ user, commentsHtml }) {
+export function MemberProfileView({ user, commentsHtml, works }) {
+  const links = profileLinks(user);
   return (
     <section class="view">
       <div class="profile-head">
@@ -90,10 +99,20 @@ export function MemberProfileView({ user, commentsHtml }) {
           <p class="member-active">{activeLabel(user.last_active_at)}</p>
         </div>
       </div>
+      {(works || []).length ? <Panel title="Recent Work" extra="flush-panel"><WorkGrid works={works} profileHandle={user.handle} /></Panel> : null}
       <div class="grid two">
         <Panel title="Profile">
           <div class="description markdown-body" dangerouslySetInnerHTML={{ __html: renderMarkdown(user.bio || "No bio yet.") }} />
-          <div class="badge-row">{(user.medium_tags || []).map((tag) => <a href={`/tags/${encodePath(tag)}`} class="badge green" data-link key={tag}>#{tag}</a>)}</div>
+          {links.length ? (
+            <div class="profile-public-links">
+              {links.map((link, index) => (
+                <a href={link.url} target="_blank" rel="noreferrer" key={`${link.url}-${index}`}>
+                  <strong>{link.site || link.url}</strong>
+                  {link.site && link.url ? <span>{link.url}</span> : null}
+                </a>
+              ))}
+            </div>
+          ) : null}
         </Panel>
         <RawHtml html={commentsHtml} />
       </div>
@@ -106,7 +125,7 @@ export function TagPageView({ data, commentsHtml }) {
   return (
     <section class="view">
       <div class="view-header"><div><p class="eyebrow">Tag</p><h1>#{data.tag}</h1><p class="lede">Photos, galleries, members, and visible comments using this tag.</p></div></div>
-      {data.works?.length ? <Panel title="Photos" extra="flush-panel"><WorkGrid works={data.works} /></Panel> : <Empty message="No visible photos use this tag yet." />}
+      {data.works?.length ? <Panel title="Photos" extra="flush-panel"><WorkGrid works={data.works} tag={data.tag} /></Panel> : <Empty message="No visible photos use this tag yet." />}
       <div class="home-lower-grid">
         <Panel title="Galleries" extra="flush-panel">{data.galleries?.length ? <GalleryMosaic galleries={data.galleries} /> : <Empty message="No galleries use this tag." />}</Panel>
         <Panel title="Members">{data.members?.length ? <div class="member-rail">{data.members.map((member) => <MemberMini member={member} key={member.id || member.handle} />)}</div> : <Empty message="No members use this tag." />}</Panel>

@@ -1,7 +1,7 @@
 import { escapeHtml } from "../lib/utils";
 import { navigate } from "../app/routing";
 import { heartTarget } from "../app/reactions";
-import { warmWorkRoute } from "../app/work-prefetch";
+import { primeWorkPayloadPreview, warmWorkRoute } from "../app/work-prefetch";
 import { icon } from "./icons";
 
 type LightboxItem = {
@@ -93,6 +93,29 @@ function lightboxGroup(origin: HTMLElement) {
   return { items, index };
 }
 
+function previewWorkFromItem(item: LightboxItem) {
+  if (item.targetType !== "work" || !item.targetId) return null;
+  const url = item.href ? new URL(item.href, location.origin) : null;
+  const galleryId = url?.searchParams.get("gallery") || new URLSearchParams(location.search).get("gallery") || "";
+  return {
+    id: item.targetId,
+    title: item.title || item.alt || "Image",
+    description: "",
+    gallery_id: galleryId,
+    gallery_title: "Gallery",
+    galleries: galleryId ? [{ id: galleryId, title: "Gallery" }] : [],
+    current_version: {
+      id: `${item.targetId}-lightbox-preview`,
+      preview_url: item.src,
+      thumbnail_url: item.src,
+    },
+    reactions: { heart_count: 0, hearted_by_me: false },
+    capabilities: {},
+    can_crosspost: false,
+    can_create_version: false,
+  };
+}
+
 function openMediaLightbox(origin: HTMLElement) {
   const { items, index } = lightboxGroup(origin);
   if (!items.length) return;
@@ -116,9 +139,9 @@ function openMediaLightbox(origin: HTMLElement) {
     <figure class="media-lightbox-content">
       <div class="media-lightbox-stage" data-lightbox-stage>
         <div class="media-lightbox-track" data-lightbox-track>
-          <img class="media-lightbox-image" data-lightbox-prev-image alt="" draggable="false">
-          <img class="media-lightbox-image" data-lightbox-current-image alt="" draggable="false">
-          <img class="media-lightbox-image" data-lightbox-next-image alt="" draggable="false">
+          <img class="media-lightbox-image" data-lightbox-prev-image alt="" draggable="false" data-protected-image>
+          <img class="media-lightbox-image" data-lightbox-current-image alt="" draggable="false" data-protected-image>
+          <img class="media-lightbox-image" data-lightbox-next-image alt="" draggable="false" data-protected-image>
         </div>
       </div>
       <figcaption class="media-lightbox-caption">
@@ -190,10 +213,13 @@ function openMediaLightbox(origin: HTMLElement) {
   };
 
   const closeToActiveWork = () => {
-    const href = items[activeIndex]?.href || "";
+    const item = items[activeIndex];
+    const href = item?.href || "";
+    const preview = item ? previewWorkFromItem(item) : null;
+    if (preview) primeWorkPayloadPreview(preview);
     close();
     if (!href || href === `${location.pathname}${location.search}`) return;
-    navigate(href);
+    requestAnimationFrame(() => navigate(href));
   };
 
   const finishSlide = (step: number) => {
@@ -222,6 +248,14 @@ function openMediaLightbox(origin: HTMLElement) {
       return;
     }
     close();
+  });
+  overlay.addEventListener("contextmenu", (event) => {
+    const target = event.target instanceof Element ? event.target : null;
+    if (target?.closest(".media-lightbox-image")) event.preventDefault();
+  });
+  overlay.addEventListener("dragstart", (event) => {
+    const target = event.target instanceof Element ? event.target : null;
+    if (target?.closest(".media-lightbox-image")) event.preventDefault();
   });
   overlay.addEventListener("pointerdown", (event) => {
     const target = event.target instanceof Element ? event.target : null;

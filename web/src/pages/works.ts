@@ -21,27 +21,58 @@ import {
   toast,
 } from "../app/core";
 import { bindCommentForm, bindVersionOverlay, highlightLinkedComment } from "../app/comments";
-import { addCollaborators, bindCollaboratorRows, collaboratorPayloads } from "../app/collaborators";
-import { loadWorkComments, loadWorkPayload } from "../app/work-prefetch";
+import { addCollaborators, bindCollaboratorRows, collaboratorPayloads, roleDatalist } from "../app/collaborators";
+import { cachedWorkComments, loadFreshWorkPayload, loadWorkComments, loadWorkPayload } from "../app/work-prefetch";
 import { currentWorkGallery, workCrosspostGalleryModalView, workDetailView, workVersionsView } from "../views/islands";
+
+let workRenderSerial = 0;
 
 async function renderWork(id) {
   if (!(await ensureAuthed())) return;
+  const serial = ++workRenderSerial;
   const data = await loadWorkPayload(id);
+  const comments = cachedWorkComments(id) || { comments: [] };
+  renderWorkPage(id, data, comments, []);
+  void hydrateWorkPage(serial, id, data);
+}
+
+function workRouteStillCurrent(serial, id) {
+  return serial === workRenderSerial && location.pathname === `/works/${id}`;
+}
+
+function workListContextFromLocation() {
+  const params = new URLSearchParams(location.search);
+  const tag = params.get("tag") || "";
+  if (tag) return { type: "tag", value: tag };
+  const profile = params.get("profile") || "";
+  if (profile) return { type: "profile", value: profile };
+  return { type: "gallery", value: params.get("gallery") || "" };
+}
+
+async function lightboxContextWorks(context, fallbackGalleryId = "") {
+  if (context.type === "tag" && context.value) {
+    const data = await api(`/api/tags/${encodePath(context.value)}`);
+    return data?.works || [];
+  }
+  if (context.type === "profile" && context.value) {
+    const data = await api(`/api/users/${encodePath(context.value)}/works`);
+    return data?.works || [];
+  }
+  const galleryId = context.value || fallbackGalleryId;
+  if (!galleryId) return [];
+  const data = await api(`/api/galleries/${encodePath(galleryId)}`);
+  return (data?.works || []).filter((item) => !item.deleted_at).sort(newestFirst);
+}
+
+function renderWorkPage(id, data, comments = { comments: [] }, contextWorks = []) {
   const work = data.work;
-  if (work.capabilities?.edit || work.can_crosspost || work.can_create_version) await Promise.all([loadRoleSuggestions(), loadGalleries()]);
-  const galleryId = new URLSearchParams(location.search).get("gallery") || "";
+  const lightboxContext = workListContextFromLocation();
+  const galleryId = lightboxContext.type === "gallery" ? lightboxContext.value : "";
   const gallery = currentWorkGallery(work, galleryId);
-  const galleryWorks = gallery?.id
-    ? ((await api(`/api/galleries/${encodePath(gallery.id)}`).catch(() => null))?.works || [])
-      .filter((item) => !item.deleted_at)
-      .sort(newestFirst)
-    : [];
   const linkedIds = new Set((work.galleries || []).map((linkedGallery) => linkedGallery.id));
   const crosspostOptions = work.can_crosspost
     ? state.galleries.filter((linkedGallery) => canCrosspostToGallery(linkedGallery) && !linkedIds.has(linkedGallery.id))
     : [];
-  const comments = await loadWorkComments(id).catch(() => ({ comments: [] }));
   setApp(pageShell(workDetailView({
     id,
     work,
@@ -50,7 +81,8 @@ async function renderWork(id) {
     versions: data.versions || [],
     collaborators: data.collaborators || [],
     crosspostOptions,
-    lightboxWorks: galleryWorks.length ? galleryWorks : [work],
+    lightboxWorks: contextWorks.length ? contextWorks : [work],
+    lightboxContext,
   })));
   bindCommentForm("work", id);
   bindVersionOverlay(data.versions || []);
@@ -65,11 +97,38 @@ async function renderWork(id) {
   highlightLinkedComment();
 }
 
+async function hydrateWorkPage(serial, id, initialData) {
+  const initialWork = initialData.work;
+  const lightboxContext = workListContextFromLocation();
+  const galleryId = lightboxContext.type === "gallery" ? lightboxContext.value : "";
+  const initialGallery = currentWorkGallery(initialWork, galleryId);
+  const needsSupportData = !!(initialWork.capabilities?.edit || initialWork.can_crosspost || initialWork.can_create_version);
+  const supportPromise = needsSupportData ? loadGalleries() : Promise.resolve();
+  const workPromise = initialData.__prefetchPreview ? loadFreshWorkPayload(id).catch(() => initialData) : Promise.resolve(initialData);
+  const commentsPromise = loadWorkComments(id).catch(() => ({ comments: [] }));
+  const contextWorksPromise = lightboxContextWorks(lightboxContext, initialGallery?.id).catch(() => []);
+  const [freshData, comments, contextWorks] = await Promise.all([workPromise, commentsPromise, contextWorksPromise, supportPromise]).then(([fresh, commentRows, works]) => [fresh, commentRows, works]);
+  if (!workRouteStillCurrent(serial, id)) return;
+  renderWorkPage(id, freshData, comments, contextWorks);
+}
+
 async function renderWorkEdit(id) {
   navigate(`/works/${id}${location.search || ""}`);
 }
 
 function bindWorkInlineEdits(id) {
+  const focusInlineField = (form) => {
+    const input = form?.querySelector("[data-edit-input]");
+    const editor = input?._easyMDE;
+    if (!editor?.codemirror) {
+      input?.focus();
+      return;
+    }
+    requestAnimationFrame(() => {
+      editor.codemirror.refresh();
+      editor.codemirror.focus();
+    });
+  };
   document.querySelectorAll("[data-edit-work-field]").forEach((control) => {
     control.addEventListener("click", () => {
       const fieldName = control.dataset.editWorkField;
@@ -77,7 +136,7 @@ function bindWorkInlineEdits(id) {
       document.querySelector(`[data-inline-edit-view="${fieldName}"]`)?.setAttribute("hidden", "hidden");
       const form = document.querySelector(`[data-inline-edit-form="${fieldName}"]`);
       form?.removeAttribute("hidden");
-      form?.querySelector("[data-edit-input]")?.focus();
+      focusInlineField(form);
     });
   });
   document.querySelectorAll("[data-cancel-inline-edit]").forEach((control) => {
@@ -181,7 +240,19 @@ function bindWorkCrosspostModal(modal, id, close) {
 function bindCollaboratorManagement(id) {
   const addForm = document.querySelector("#collab-form");
   const addButton = document.querySelector("[data-show-collaborator-add]");
-  addButton?.addEventListener("click", () => {
+  const ensureRoleSuggestions = async () => {
+    if (!state.roleSuggestions?.length) await loadRoleSuggestions().catch(() => undefined);
+  };
+  const refreshRoleDatalist = () => {
+    const datalist = document.querySelector("#detail-work-role-options");
+    if (datalist) datalist.outerHTML = roleDatalist("detail-work-role-options");
+  };
+  const ensureRoleDatalist = async () => {
+    await ensureRoleSuggestions();
+    refreshRoleDatalist();
+  };
+  addButton?.addEventListener("click", async () => {
+    await ensureRoleDatalist();
     addButton.setAttribute("hidden", "hidden");
     addForm?.removeAttribute("hidden");
     addForm?.querySelector("input")?.focus();
@@ -199,7 +270,8 @@ function bindCollaboratorManagement(id) {
   });
   bindCollaboratorRows(document);
   document.querySelectorAll("[data-edit-collaborator]").forEach((control) => {
-    control.addEventListener("click", () => {
+    control.addEventListener("click", async () => {
+      await ensureRoleDatalist();
       const collaboratorId = control.dataset.editCollaborator;
       document.querySelector(`[data-collaborator-view-row="${collaboratorId}"]`)?.setAttribute("hidden", "hidden");
       const editRow = document.querySelector(`[data-collaborator-edit-row="${collaboratorId}"]`);

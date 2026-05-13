@@ -79,8 +79,8 @@ export function membersIndexView(members) {
 }
 
 /** Mounts the TSX member profile route. */
-export function memberProfileView({ user, comments }) {
-  return islandPlaceholder("member-profile-view", { user, commentsHtml: commentsPanel("profile", user.id, comments) });
+export function memberProfileView({ user, comments, works }) {
+  return islandPlaceholder("member-profile-view", { user, works, commentsHtml: commentsPanel("profile", user.id, comments) });
 }
 
 /** Mounts the TSX tag detail route. */
@@ -159,7 +159,7 @@ export function notFoundView() {
 export { currentWorkGallery };
 
 /** Mounts the TSX work detail route at `/works/:id`. */
-export function workDetailView({ id, work, gallery, comments, versions, collaborators, crosspostOptions, lightboxWorks }) {
+export function workDetailView({ id, work, gallery, comments, versions, collaborators, crosspostOptions, lightboxWorks, lightboxContext }) {
   return islandPlaceholder("work-detail-view", {
     id,
     work,
@@ -169,6 +169,7 @@ export function workDetailView({ id, work, gallery, comments, versions, collabor
     collaborators,
     crosspostOptions,
     lightboxWorks,
+    lightboxContext,
     collaboratorRowsHtml: roleDatalist("detail-work-role-options"),
   });
 }

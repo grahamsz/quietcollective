@@ -52,8 +52,8 @@ export function galleryAccessRules(gallery: Gallery) {
 }
 
 /** Creates a WorkGrid island placeholder used by galleries, feeds, and tag pages. */
-export function imageGrid(works: Work[], options: { galleryId?: string } = {}) {
-  return islandPlaceholder("work-grid", { works, galleryId: options.galleryId || "" });
+export function imageGrid(works: Work[], options: { galleryId?: string; profileHandle?: string; tag?: string } = {}) {
+  return islandPlaceholder("work-grid", { works, galleryId: options.galleryId || "", profileHandle: options.profileHandle || "", tag: options.tag || "" });
 }
 
 function islandNode(island: Island): ComponentChildren {

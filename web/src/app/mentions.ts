@@ -8,6 +8,8 @@ let popup = null;
 let activeContext = null;
 let activeIndex = 0;
 let requestSerial = 0;
+let tagsRequest = null;
+let tagSuggestionsLoaded = false;
 
 async function ensureMembers() {
   if (state.membersLoaded) return state.members || [];
@@ -30,13 +32,49 @@ async function ensureMembers() {
   return membersRequest;
 }
 
-function mentionToken(value, cursor) {
+async function ensurePopularTags() {
+  if (tagSuggestionsLoaded && state.popularTagsLoaded) return state.popularTags || [];
+  if (!tagsRequest) {
+    tagsRequest = api("/api/tags/popular")
+      .then((data) => {
+        state.popularTags = data.tags || [];
+        state.popularTagsLoaded = true;
+        tagSuggestionsLoaded = true;
+        return state.popularTags;
+      })
+      .catch(() => {
+        if (!state.popularTagsLoaded) {
+          state.popularTags = [];
+          state.popularTagsLoaded = true;
+        }
+        tagSuggestionsLoaded = true;
+        return state.popularTags;
+      })
+      .finally(() => {
+        tagsRequest = null;
+      });
+  }
+  return tagsRequest;
+}
+
+function completionToken(value, cursor, { tags = false } = {}) {
   const before = String(value || "").slice(0, cursor);
-  const match = before.match(/(^|[\s([{])@([a-z0-9_-]*)$/i);
-  if (!match) return null;
+  const memberMatch = before.match(/(^|[\s([{])@([a-z0-9_-]*)$/i);
+  if (memberMatch) {
+    return {
+      kind: "member",
+      query: memberMatch[2] || "",
+      start: cursor - (memberMatch[2] || "").length - 1,
+      end: cursor,
+    };
+  }
+  if (!tags) return null;
+  const tagMatch = before.match(/(^|[\s([{])#([^\s#]+)$/);
+  if (!tagMatch) return null;
   return {
-    query: match[2] || "",
-    start: cursor - (match[2] || "").length - 1,
+    kind: "tag",
+    query: tagMatch[2] || "",
+    start: cursor - (tagMatch[2] || "").length - 1,
     end: cursor,
   };
 }
@@ -52,6 +90,21 @@ function filteredMembers(query) {
     .slice(0, 8);
 }
 
+function filteredTags(query) {
+  const term = String(query || "").toLowerCase();
+  return [...(state.popularTags || [])]
+    .map((tag) => ({
+      tag: String(tag?.tag || tag?.name || "").toLowerCase(),
+      count: Number(tag?.count || 0),
+    }))
+    .filter((tag) => tag.tag && (!term || tag.tag.startsWith(term) || tag.tag.includes(term)))
+    .slice(0, 8);
+}
+
+function filteredSuggestions(kind, query) {
+  return kind === "tag" ? filteredTags(query) : filteredMembers(query);
+}
+
 function ensurePopup() {
   if (popup) return popup;
   popup = document.createElement("div");
@@ -61,8 +114,8 @@ function ensurePopup() {
   popup.addEventListener("click", (event) => {
     const option = event.target.closest("[data-mention-index]");
     if (!option || !activeContext) return;
-    const member = activeContext.members[Number(option.dataset.mentionIndex)];
-    if (member) commitMention(member);
+    const item = activeContext.items[Number(option.dataset.mentionIndex)];
+    if (item) commitSuggestion(item);
   });
   document.body.append(popup);
   document.addEventListener("click", (event) => {
@@ -83,36 +136,45 @@ function positionPopup(anchor) {
 function renderPopup() {
   const node = ensurePopup();
   if (!activeContext) return;
-  const members = activeContext.members || [];
-  if (!members.length) {
-    node.innerHTML = `<div class="mention-empty">${activeContext.loading ? "Loading..." : "No members found"}</div>`;
+  const items = activeContext.items || [];
+  if (!items.length) {
+    const emptyLabel = activeContext.kind === "tag" ? "No tags found" : "No members found";
+    node.innerHTML = `<div class="mention-empty">${activeContext.loading ? "Loading..." : emptyLabel}</div>`;
     node.hidden = false;
     return;
   }
-  node.innerHTML = members.map((member, index) => {
+  node.innerHTML = items.map((item, index) => {
     const selected = index === activeIndex ? " is-active" : "";
-    const displayName = member.display_name && member.display_name !== member.handle ? `<span>${escapeHtml(member.display_name)}</span>` : "";
-    return `<button class="mention-option${selected}" type="button" data-mention-index="${index}"><strong>@${escapeHtml(member.handle)}</strong>${displayName}</button>`;
+    if (activeContext.kind === "tag") {
+      const detail = item.count ? `<span>${escapeHtml(String(item.count))} use${item.count === 1 ? "" : "s"}</span>` : "";
+      return `<button class="mention-option${selected}" type="button" data-mention-index="${index}"><strong>#${escapeHtml(item.tag)}</strong>${detail}</button>`;
+    }
+    const displayName = item.display_name && item.display_name !== item.handle ? `<span>${escapeHtml(item.display_name)}</span>` : "";
+    return `<button class="mention-option${selected}" type="button" data-mention-index="${index}"><strong>@${escapeHtml(item.handle)}</strong>${displayName}</button>`;
   }).join("");
   node.hidden = false;
 }
 
-function showMentionPopup(context, anchor, query) {
+function showCompletionPopup(context, anchor, token) {
   const serial = ++requestSerial;
+  const loaded = token.kind === "tag" ? tagSuggestionsLoaded : state.membersLoaded;
+  const items = loaded || token.kind === "tag" ? filteredSuggestions(token.kind, token.query) : [];
   activeContext = {
     ...context,
     anchor,
-    query,
-    loading: !state.membersLoaded,
-    members: state.membersLoaded ? filteredMembers(query) : [],
+    kind: token.kind,
+    query: token.query,
+    loading: !loaded,
+    items,
   };
   activeIndex = 0;
   positionPopup(anchor);
   renderPopup();
-  ensureMembers().then(() => {
+  const ensure = token.kind === "tag" ? ensurePopularTags : ensureMembers;
+  ensure().then(() => {
     if (serial !== requestSerial || !activeContext) return;
     activeContext.loading = false;
-    activeContext.members = filteredMembers(activeContext.query);
+    activeContext.items = filteredSuggestions(activeContext.kind, activeContext.query);
     positionPopup(activeContext.anchor);
     renderPopup();
   });
@@ -124,15 +186,17 @@ function hideMentionPopup() {
   if (popup) popup.hidden = true;
 }
 
-function commitMention(member) {
-  if (!activeContext || !member?.handle) return;
-  activeContext.commit(`@${member.handle}`);
+function commitSuggestion(item) {
+  if (!activeContext || !item) return;
+  const value = activeContext.kind === "tag" ? item.tag && `#${item.tag}` : item.handle && `@${item.handle}`;
+  if (!value) return;
+  activeContext.commit(value);
   hideMentionPopup();
 }
 
 function moveActiveIndex(direction) {
-  if (!activeContext?.members?.length) return;
-  activeIndex = (activeIndex + direction + activeContext.members.length) % activeContext.members.length;
+  if (!activeContext?.items?.length) return;
+  activeIndex = (activeIndex + direction + activeContext.items.length) % activeContext.items.length;
   renderPopup();
 }
 
@@ -149,10 +213,10 @@ function handleMentionKeydown(event) {
     return true;
   }
   if (event.key === "Enter" || event.key === "Tab") {
-    const member = activeContext.members?.[activeIndex];
-    if (member) {
+    const item = activeContext.items?.[activeIndex];
+    if (item) {
       event.preventDefault();
-      commitMention(member);
+      commitSuggestion(item);
       return true;
     }
   }
@@ -168,10 +232,10 @@ function bindMentionInput(input) {
   if (!input || input.dataset.mentionReady === "true") return;
   input.dataset.mentionReady = "true";
   const update = () => {
-    const token = mentionToken(input.value, input.selectionStart || 0);
+    const token = completionToken(input.value, input.selectionStart || 0);
     if (!token) return hideMentionPopup();
     const rect = input.getBoundingClientRect();
-    showMentionPopup({
+    showCompletionPopup({
       source: input,
       commit: (value) => {
         input.value = `${input.value.slice(0, token.start)}${value}${input.value.slice(token.end)}`;
@@ -184,7 +248,7 @@ function bindMentionInput(input) {
       left: rect.left + window.scrollX,
       top: rect.bottom + window.scrollY + 6,
       width: rect.width,
-    }, token.query);
+    }, token);
   };
   input.addEventListener("input", update);
   input.addEventListener("keyup", (event) => {
@@ -206,12 +270,14 @@ function bindMarkdownMentionAutocomplete(cm) {
   if (!cm || cm._mentionReady) return;
   cm._mentionReady = true;
   const source = cm.getWrapperElement();
+  let updateTimer = null;
   const update = () => {
+    updateTimer = null;
     const cursor = cm.getCursor();
-    const token = mentionToken(cm.getLine(cursor.line), cursor.ch);
+    const token = completionToken(cm.getLine(cursor.line), cursor.ch, { tags: true });
     if (!token) return hideMentionPopup();
     const coords = cm.cursorCoords(null, "page");
-    showMentionPopup({
+    showCompletionPopup({
       source,
       commit: (value) => {
         cm.replaceRange(value, { line: cursor.line, ch: token.start }, { line: cursor.line, ch: token.end });
@@ -221,15 +287,25 @@ function bindMarkdownMentionAutocomplete(cm) {
       left: coords.left,
       top: coords.bottom + 6,
       width: 280,
-    }, token.query);
+    }, token);
+  };
+  const scheduleUpdate = () => {
+    if (updateTimer) window.clearTimeout(updateTimer);
+    updateTimer = window.setTimeout(update, 0);
   };
   cm.on("keyup", (_instance, event) => {
     if (["ArrowDown", "ArrowUp", "Enter", "Tab", "Escape"].includes(event.key)) return;
-    update();
+    scheduleUpdate();
   });
-  cm.on("cursorActivity", update);
+  cm.on("inputRead", scheduleUpdate);
+  cm.on("changes", scheduleUpdate);
+  cm.on("cursorActivity", scheduleUpdate);
   cm.on("keydown", (_instance, event) => handleMentionKeydown(event));
   cm.on("blur", () => setTimeout(() => {
+    if (updateTimer) {
+      window.clearTimeout(updateTimer);
+      updateTimer = null;
+    }
     if (!popup?.matches(":hover")) hideMentionPopup();
   }, 120));
 }

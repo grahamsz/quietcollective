@@ -72,11 +72,10 @@ function bindChoiceHelp(scope) {
 
 async function renderGallery(id) {
   if (!(await ensureAuthed())) return;
-  const data = await api(`/api/galleries/${encodePath(id)}`);
+  const data = await api(`/api/galleries/${encodePath(id)}?include=comments`);
   const gallery = data.gallery;
   const works = [...(data.works || [])].sort(newestFirst);
-  const comments = await api(`/api/comments?target_type=gallery&target_id=${encodePath(id)}`).catch(() => ({ comments: [] }));
-  setApp(pageShell(galleryDetailView({ id, gallery, works, comments: comments.comments, members: data.members || [] })));
+  setApp(pageShell(galleryDetailView({ id, gallery, works, comments: data.comments || [], members: data.members || [] })));
   bindCreateWork(id, gallery);
   bindGalleryDropSurface();
   bindCommentForm("gallery", id);

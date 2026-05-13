@@ -22,6 +22,14 @@ function Empty({ message }) {
   return <div class="empty-state">{message}</div>;
 }
 
+function profileLinkRows(links = []) {
+  const rows = (links || []).map((link) => ({
+    site: link?.site || link?.label || link?.title || "",
+    url: link?.url || link?.href || (typeof link === "string" ? link : ""),
+  }));
+  return rows.length ? rows : [{ site: "", url: "" }];
+}
+
 /** Renders the profile settings route used by `/me/profile`. */
 export function ProfileView({ me, browserNotificationsHtml }) {
   return (
@@ -38,17 +46,23 @@ export function ProfileView({ me, browserNotificationsHtml }) {
           <form class="form" id="profile-form">
             <div class="form-row"><label>Handle</label><input name="handle" defaultValue={me.handle} required /></div>
             <div class="form-row"><label>Bio</label><textarea name="bio" data-markdown-editor data-target-type="profile" data-target-id={me.id} defaultValue={me.bio || ""} /><MarkdownHint /></div>
-            <div class="form-row"><label>Links JSON</label><textarea name="links" defaultValue={JSON.stringify(me.links || [], null, 2)} /></div>
+            <div class="form-row">
+              <label>Links</label>
+              <div class="profile-link-list" data-profile-link-list>
+                {profileLinkRows(me.links).map((link, index) => (
+                  <div class="profile-link-row" data-profile-link-row key={index}>
+                    <input name="link_site" defaultValue={link.site} placeholder="Site" autocomplete="off" />
+                    <input name="link_url" type="url" defaultValue={link.url} placeholder="https://example.com" autocomplete="off" />
+                    <button class="button ghost" type="button" data-remove-profile-link>Remove</button>
+                  </div>
+                ))}
+              </div>
+              <button class="button ghost" type="button" data-add-profile-link>Add link</button>
+            </div>
             <button class="button primary" type="submit">Save profile</button>
           </form>
         </Panel>
         <div>
-          <Panel title="Medium Tags">
-            <form class="form" id="tag-form">
-              <div class="form-row"><label>Tags</label><input name="tags" defaultValue={(me.medium_tags || []).join(", ")} /><span class="field-hint">Comma-separated medium tags.</span></div>
-              <button class="button" type="submit">Save tags</button>
-            </form>
-          </Panel>
           <RawHtml html={browserNotificationsHtml} />
         </div>
       </div>

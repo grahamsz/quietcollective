@@ -6,12 +6,16 @@ import { ProtectedImage } from "./protected-image";
 type WorkGridProps = {
   works: Work[];
   galleryId?: string;
+  profileHandle?: string;
+  tag?: string;
 };
 
 type WorkTileProps = {
   work: Work;
   index?: number;
   galleryId?: string;
+  profileHandle?: string;
+  tag?: string;
 };
 
 function tileRevealStyle(index: number) {
@@ -47,11 +51,17 @@ function WorkAuthorPill({ work }: { work: Work }) {
 }
 
 /** Displays one work tile used by gallery grids, fresh works, feedback requests, and tag pages. */
-export function WorkTile({ work, index = 0, galleryId = "" }: WorkTileProps) {
+export function WorkTile({ work, index = 0, galleryId = "", profileHandle = "", tag = "" }: WorkTileProps) {
   const version = work.current_version || {};
   const imageUrl = version.thumbnail_url || version.preview_url || "";
   const hearts = Number(work.reactions?.heart_count || 0);
-  const href = galleryId ? `/works/${work.id}?gallery=${encodePath(galleryId)}` : `/works/${work.id}`;
+  const href = galleryId
+    ? `/works/${work.id}?gallery=${encodePath(galleryId)}`
+    : tag
+      ? `/works/${work.id}?tag=${encodePath(tag)}`
+      : profileHandle
+        ? `/works/${work.id}?profile=${encodePath(profileHandle)}`
+        : `/works/${work.id}`;
   const updated = relativeTime(work.updated_at || work.created_at);
   const meta = hearts ? `${hearts} heart${hearts === 1 ? "" : "s"}, ${updated}` : updated;
   return (
@@ -76,14 +86,14 @@ export function WorkTile({ work, index = 0, galleryId = "" }: WorkTileProps) {
 }
 
 /** Displays a responsive grid of work tiles used by gallery, home, and tag views. */
-export function WorkGrid({ works, galleryId = "" }: WorkGridProps) {
+export function WorkGrid({ works, galleryId = "", profileHandle = "", tag = "" }: WorkGridProps) {
   return (
     <div class="image-grid">
       {[...(works || [])]
         .filter((work) => !work.deleted_at)
         .sort(newestFirst)
         .map((work, index) => (
-          <WorkTile work={work} index={index} galleryId={galleryId} key={work.id} />
+          <WorkTile work={work} index={index} galleryId={galleryId} profileHandle={profileHandle} tag={tag} key={work.id} />
         ))}
     </div>
   );

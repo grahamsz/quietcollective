@@ -26,6 +26,12 @@ function RawInline({ html }) {
   return <span dangerouslySetInnerHTML={{ __html: html || "" }} />;
 }
 
+function workDetailHref(id, gallery, lightboxContext) {
+  if (lightboxContext?.type === "tag" && lightboxContext.value) return `/works/${id}?tag=${encodePath(lightboxContext.value)}`;
+  if (lightboxContext?.type === "profile" && lightboxContext.value) return `/works/${id}?profile=${encodePath(lightboxContext.value)}`;
+  return `/works/${id}${gallery?.id ? `?gallery=${encodePath(gallery.id)}` : ""}`;
+}
+
 function MarkdownHint() {
   return <span class="field-hint">Markdown supported. Use @handle to mention members and #tag to tag ideas.</span>;
 }
@@ -41,6 +47,82 @@ function CollaboratorValue({ collab }) {
 
 function CollaboratorRemoveLabel({ collab }) {
   return CollaboratorValue({ collab }) || "contributor";
+}
+
+function creditKey(label) {
+  return String(label || "").trim().replace(/^@/, "").toLowerCase();
+}
+
+function userCredit(work) {
+  const handle = String(work?.created_by_user?.handle || work?.created_by_handle || "").trim();
+  const displayName = String(work?.created_by_user?.display_name || "").trim();
+  const label = handle ? `@${handle}` : displayName;
+  if (!label) return null;
+  return {
+    kind: "uploader",
+    label,
+    href: handle ? `/members/${encodePath(handle)}` : "",
+    title: `Uploaded by ${label}`,
+  };
+}
+
+function collaboratorCredit(collab) {
+  const handle = String(collab?.linked_handle || "").trim();
+  const displayName = String(collab?.display_name || "").trim();
+  const label = handle ? `@${handle}` : displayName;
+  if (!label) return null;
+  const role = String(collab?.role_label || "").trim();
+  return {
+    kind: "contributor",
+    label,
+    href: handle ? `/members/${encodePath(handle)}` : "",
+    title: role ? `${label}, ${role}` : `${label}, contributor`,
+  };
+}
+
+function workCredits(work, collaborators) {
+  const credits = [];
+  const seen = new Set();
+  const uploader = userCredit(work);
+  if (uploader) {
+    credits.push(uploader);
+    seen.add(creditKey(uploader.label));
+  }
+  for (const collab of collaborators || []) {
+    const credit = collaboratorCredit(collab);
+    const key = creditKey(credit?.label);
+    if (!credit || !key || seen.has(key)) continue;
+    credits.push(credit);
+    seen.add(key);
+  }
+  return credits;
+}
+
+function WorkCreditChip({ credit }) {
+  const content = (
+    <>
+      <Icon name={credit.kind === "uploader" ? "upload" : "user"} className="tile-icon" />
+      <span>{credit.label}</span>
+    </>
+  );
+  const className = `work-credit-chip is-${credit.kind}`;
+  if (credit.href) {
+    return <a href={credit.href} class={className} data-link title={credit.title} aria-label={credit.title}>{content}</a>;
+  }
+  return <span class={className} title={credit.title} aria-label={credit.title}>{content}</span>;
+}
+
+function WorkCreditChips({ work, collaborators }) {
+  const credits = workCredits(work, collaborators);
+  if (!credits.length) return null;
+  const visible = credits.slice(0, 4);
+  const hidden = credits.slice(4);
+  return (
+    <span class="work-credit-stack" aria-label="Work credits">
+      {visible.map((credit) => <WorkCreditChip credit={credit} key={`${credit.kind}-${credit.label}`} />)}
+      {hidden.length ? <span class="work-credit-chip is-overflow" title={hidden.map((credit) => credit.label).join(", ")} aria-label={`${hidden.length} more contributors`}>+{hidden.length}</span> : null}
+    </span>
+  );
 }
 
 function InlineEditButton({ field, label }) {
@@ -360,7 +442,7 @@ function WorkDangerZone({ id, work, gallery }) {
 }
 
 /** Renders the work detail route including media, actions, collaborators, and comments. */
-export function WorkDetailView({ id, work, gallery, commentsHtml, reactionButtonHtml, collaborators, crosspostOptions, collaboratorRowsHtml, lightboxWorks }) {
+export function WorkDetailView({ id, work, gallery, commentsHtml, reactionButtonHtml, collaborators, crosspostOptions, collaboratorRowsHtml, lightboxWorks, lightboxContext }) {
   const version = work.current_version;
   const lightboxItems = (lightboxWorks || [work])
     .map((item) => {
@@ -370,7 +452,7 @@ export function WorkDetailView({ id, work, gallery, commentsHtml, reactionButton
         src,
         alt: item.title || "",
         title: item.title || "",
-        href: `/works/${item.id}${gallery?.id ? `?gallery=${encodePath(gallery.id)}` : ""}`,
+        href: workDetailHref(item.id, gallery, lightboxContext),
         targetType: "work",
         targetId: item.id,
       } : null;
@@ -385,6 +467,7 @@ export function WorkDetailView({ id, work, gallery, commentsHtml, reactionButton
           <WorkTitleEditor id={id} work={work} />
           <WorkDescriptionEditor id={id} work={work} />
           <div class="gallery-access-inline">
+            <WorkCreditChips work={work} collaborators={collaborators || []} />
             <GalleryAccessChips gallery={gallery} className="is-inline" />
             <span class="work-meta-actions">
               <RawInline html={reactionButtonHtml} />
@@ -403,7 +486,7 @@ export function WorkDetailView({ id, work, gallery, commentsHtml, reactionButton
           data-lightbox-item="true"
           data-lightbox-src={version.preview_url}
           data-lightbox-title={work.title || undefined}
-          data-lightbox-href={`/works/${id}${gallery?.id ? `?gallery=${encodePath(gallery.id)}` : ""}`}
+          data-lightbox-href={workDetailHref(id, gallery, lightboxContext)}
           data-lightbox-target-type="work"
           data-lightbox-target-id={id}
           data-doubletap-heart-type="work"
@@ -524,7 +607,17 @@ export function WorkVersionsView({ id, work, versions }) {
       <div class="view-header"><div><p class="eyebrow">Versions</p><h1>{work.title}</h1></div><div class="toolbar"><a href={`/works/${id}`} class="button" data-link>Back to work</a></div></div>
       <div class="grid">
         {(versions || []).length
-          ? versions.map((version) => <article class="version-card" key={version.id}><h3 class="card-title">Version {version.version_number}</h3><div class="meta-row">{formatDate(version.created_at)}</div><div class="toolbar">{version.original_url ? <a href={version.original_url} class="button">Original</a> : null}{version.preview_url ? <a href={version.preview_url} class="button">Preview</a> : null}</div></article>)
+          ? versions.map((version) => {
+            const thumb = version.thumbnail_url || version.preview_url || "";
+            return (
+              <article class="version-card" key={version.id}>
+                {thumb ? <div class="version-thumb"><ProtectedImage src={thumb} alt={`Version ${version.version_number}`} /></div> : null}
+                <h3 class="card-title">Version {version.version_number}</h3>
+                <div class="meta-row">{formatDate(version.created_at)}</div>
+                <div class="toolbar">{version.original_url ? <a href={version.original_url} class="button">Original</a> : null}{version.preview_url ? <a href={version.preview_url} class="button">Preview</a> : null}</div>
+              </article>
+            );
+          })
           : <Empty message="No versions yet." />}
       </div>
     </section>

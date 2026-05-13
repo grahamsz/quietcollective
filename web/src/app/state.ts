@@ -36,14 +36,18 @@ export const NOTIFICATION_ACTIVE_WINDOW_MS = NOTIFICATION_RECENT_WINDOW_MS + NOT
 export const BROWSER_NOTIFICATIONS_KEY = "qc_browser_notifications";
 export const API_JSON_CACHE_PREFIX = "qc_api_cache:";
 export const API_JSON_CACHEABLE_PATHS = [
+  /^\/api\/home$/,
   /^\/api\/auth\/me$/,
   /^\/api\/members$/,
   /^\/api\/users\/[^/?]+$/,
+  /^\/api\/users\/[^/?]+\/works$/,
   /^\/api\/galleries(?:$|\/[^/?]+$)/,
+  /^\/api\/galleries\/[^/?]+\?.*include=comments/,
   /^\/api\/works\/[^/?]+\/comments$/,
   /^\/api\/activity$/,
   /^\/api\/notifications$/,
   /^\/api\/notifications\/poll(?:\?|$)/,
   /^\/api\/tags\/popular$/,
+  /^\/api\/tags\/[^/?]+$/,
   /^\/api\/comments\?/,
 ];

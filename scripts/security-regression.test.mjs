@@ -3,14 +3,21 @@ import { readFileSync } from "node:fs";
 
 const workerEntry = readFileSync("worker/src/index.ts", "utf8");
 const workerRoutes = readFileSync("worker/src/routes.ts", "utf8");
+const d1MetricsSource = readFileSync("worker/src/d1-metrics.ts", "utf8");
+const feedbackCleanupSource = readFileSync("worker/src/feedback-cleanup.ts", "utf8");
 const sessionsSource = readFileSync("worker/src/sessions.ts", "utf8");
 const workerConstants = readFileSync("worker/src/constants.ts", "utf8");
 const webPushSource = readFileSync("worker/src/web-push.ts", "utf8");
+const tagIndexSource = readFileSync("worker/src/tag-index.ts", "utf8");
 const worker = `${workerEntry}\n${workerRoutes}\n${workerConstants}\n${webPushSource}`;
 const adminViewSource = readFileSync("web/src/views/admin.tsx", "utf8");
+const accountPageSource = readFileSync("web/src/pages/account.ts", "utf8");
+const accountViewSource = readFileSync("web/src/views/account.tsx", "utf8");
 const authViewSource = readFileSync("web/src/views/auth.tsx", "utf8");
 const authPageSource = readFileSync("web/src/pages/auth.ts", "utf8");
+const commentsSource = readFileSync("web/src/app/comments.ts", "utf8");
 const activitySource = readFileSync("worker/src/activity.ts", "utf8");
+const homeViewSource = readFileSync("web/src/views/home.tsx", "utf8");
 const apiCacheSource = readFileSync("worker/src/api-cache.ts", "utf8");
 const mediaSource = readFileSync("worker/src/media.ts", "utf8");
 const mediaComponentSource = readFileSync("web/src/components/media.ts", "utf8");
@@ -62,6 +69,7 @@ function sourceBlock(source, start, end) {
 test("protected API route groups require authentication", () => {
   for (const route of [
     "/api/admin/*",
+    "/api/home",
     "/api/members",
     "/api/users/*",
     "/api/galleries",
@@ -92,11 +100,13 @@ test("public setup route keeps bootstrap token and one-admin guard", () => {
 });
 
 test("comment reads are permission checked and avoid ambiguous self-join columns", () => {
-  const block = routeBlock('app.get("/api/comments"', 'app.post("/api/reactions/:targetType/:targetId/heart"');
-  assert.match(block, /canViewTarget\(c\.env\.DB, currentUser\(c\), targetType, targetId\)/);
-  assert.match(block, /WHERE comments\.target_type = \? AND comments\.target_id = \?/);
-  assert.doesNotMatch(block, /WHERE target_type = \? AND target_id = \?/);
-  assert.match(block, /COUNT\(reactions\.id\) AS heart_count/);
+  const route = routeBlock('app.get("/api/comments"', 'app.post("/api/reactions/:targetType/:targetId/heart"');
+  const helper = sourceBlock(workerRoutes, "async function commentsForTarget", 'app.get("/api/comments"');
+  assert.match(route, /canViewTarget\(c\.env\.DB, currentUser\(c\), targetType, targetId\)/);
+  assert.match(route, /commentsForTarget\(c, currentUser\(c\), targetType, targetId\)/);
+  assert.match(helper, /WHERE comments\.target_type = \? AND comments\.target_id = \?/);
+  assert.doesNotMatch(helper, /WHERE target_type = \? AND target_id = \?/);
+  assert.match(helper, /COUNT\(reactions\.id\) AS heart_count/);
 });
 
 test("comment writes and reactions require view/comment capability before inserts", () => {
@@ -111,7 +121,7 @@ test("comment writes and reactions require view/comment capability before insert
 });
 
 test("notifications use the joined activity context instead of the old N+1 formatter", () => {
-  const block = routeBlock('app.get("/api/notifications"', 'app.get("/api/notifications/poll"');
+  const block = sourceBlock(workerRoutes, "async function notificationsForUser", 'app.get("/api/notifications/poll"');
   assert.match(block, /visibleNotificationRows\(c, user, \{ limit: 200 \}\)/);
   assert.match(block, /async function visibleNotificationRows/);
   assert.match(block, /ACTIVITY_CONTEXT_SELECT/);
@@ -166,6 +176,19 @@ test("notification polling does not update member activity", () => {
   assert.ok(block.indexOf("requestCountsAsActivity(c)") < block.indexOf("UPDATE users SET last_active_at"));
 });
 
+test("password login and work posting mark members active without broad mutation touches", () => {
+  const login = routeBlock('app.post("/api/auth/login"', 'app.post("/api/auth/logout"');
+  assert.match(login, /touchUserActivity\(c, user\.id\)/);
+  assert.match(login, /user\.last_active_at = activeAt/);
+
+  const workCreate = routeBlock('app.post("/api/galleries/:galleryId/works"', 'app.get("/api/works/:id"');
+  assert.match(workCreate, /touchUserActivity\(c, user\.id, timestamp\)/);
+  assert.match(workCreate, /touchUserActivity\(c, user\.id\)[\s\S]*duplicate: true/);
+
+  const middleware = sourceBlock(workerRoutes, 'app.use("*", async (c, next) => {', 'app.get("/api/health"');
+  assert.doesNotMatch(middleware, /touchUserActivity/);
+});
+
 test("session cookies carry minimal signed auth claims and revalidate user rows periodically", () => {
   assert.match(sessionsSource, /SESSION_CLAIMS_VERSION = 2/);
   assert.match(sessionsSource, /SESSION_REVALIDATE_AFTER_SECONDS = 10 \* 60/);
@@ -180,6 +203,8 @@ test("session cookies carry minimal signed auth claims and revalidate user rows 
 
   const authBlock = sourceBlock(workerEntry, "async function requireUser", "function currentUser");
   assert.match(authBlock, /readSession\(token, c\.env\)/);
+  assert.match(authBlock, /const cookie = parseCookies\(c\.req\.header\("cookie"\)\)\.get\("qc_session"\)/);
+  assert.match(authBlock, /const token = cookie \|\| bearer/);
   assert.match(authBlock, /session\.kind === "legacy" \|\| session\.stale/);
   assert.match(authBlock, /getSessionUserById\(c\.env\.DB, userId\)/);
   assert.match(authBlock, /createSession\(user, c\.env, \{ expiresAt: session\.expiresAt \}\)/);
@@ -210,7 +235,7 @@ test("activity and mention notifications stay scoped to visible content", () => 
   assert.match(eventBlock, /canUserViewTarget\(env\.DB, row\.id, event\.target_type, event\.target_id\)/);
   assert.doesNotMatch(eventBlock, /for \(const row of mentioned\.results\) targets\.add\(row\.id\)/);
 
-  const activityRoute = routeBlock('app.get("/api/activity"', 'app.get("/api/notifications"');
+  const activityRoute = sourceBlock(workerRoutes, "async function activityEventsForUser", 'app.get("/api/activity"');
   assert.match(activityRoute, /type NOT IN \('rules\.published', 'rules\.accepted'\)/);
 });
 
@@ -243,6 +268,19 @@ test("private media stays permission-gated and signed media uses direct R2 URLs 
   const routedMarkdownMedia = routeBlock('app.get("/api/media/markdown-assets/:id/:variant"', 'app.get("/api/media/works/:workId/versions/:versionId/:variant"');
   assert.ok(routedMarkdownMedia.indexOf("canViewTarget") < routedMarkdownMedia.indexOf("directR2MediaRedirect"));
 
+  const markdownUpload = routeBlock('app.post("/api/markdown-assets"', 'app.get("/api/galleries"');
+  assert.match(markdownUpload, /const key = `\$\{base\}\/original`/);
+  assert.match(markdownUpload, /const previewKey = `\$\{base\}\/preview`/);
+  assert.match(markdownUpload, /const thumbnailKey = `\$\{base\}\/thumbnail`/);
+  assert.match(markdownUpload, /`asset-\$\{id\}`/);
+  assert.doesNotMatch(markdownUpload, /original-\$\{file\.name|preview-\$\{previewFile\.name|thumbnail-\$\{thumbnailFile\.name/);
+  const workVersionUpload = sourceBlock(workerRoutes, "async function createWorkVersion", "function collaboratorInputsFromBody");
+  assert.match(workVersionUpload, /originalKey = `\$\{base\}\/original`/);
+  assert.match(workVersionUpload, /previewKey = `\$\{base\}\/preview`/);
+  assert.match(workVersionUpload, /thumbnailKey = `\$\{base\}\/thumbnail`/);
+  assert.match(workVersionUpload, /originalFilename = `work-\$\{work\.id\}-version-\$\{id\}`/);
+  assert.doesNotMatch(workVersionUpload, /original-\$\{file\.name|preview-\$\{previewFile\.name|thumbnail-\$\{thumbnailFile\.name/);
+
   const media = sourceBlock(mediaSource, "export async function readSignedMediaPayload", undefined);
   assert.match(media, /sign\(data, secret\) !== signature/);
 
@@ -255,6 +293,7 @@ test("cacheable gallery and feed APIs use ETags before expensive reads", () => {
   assert.match(helpers, /prepareApiCache/);
   assert.match(helpers, /apiNotModified/);
   assert.match(helpers, /bumpApiCacheToken/);
+  assert.match(helpers, /await sign\(unsigned, secret\)/);
   assert.ok(helpers.includes('replace(/^W\\//i, "")'));
 
   const middleware = routeBlock('app.use("*", async (c, next) => {', 'app.get("/api/health"');
@@ -267,29 +306,51 @@ test("cacheable gallery and feed APIs use ETags before expensive reads", () => {
   assert.match(authMe, /apiNotModified\(cache\)/);
   assert.match(authMe, /cacheableJson\(c, cache, \{/);
 
+  const home = routeBlock('app.get("/api/home"', 'app.patch("/api/auth/password"');
+  assert.match(home, /app\.get\("\/api\/home", requireUser/);
+  assert.ok(home.indexOf("prepareApiCache") < home.indexOf("fullCurrentUser"));
+  assert.match(home, /apiNotModified\(cache\)/);
+  assert.match(home, /visibleGalleries\(c, user\)/);
+  assert.match(home, /visibleMembers\(c\)/);
+  assert.match(home, /popularTagsForUser\(c, user\)/);
+  assert.match(home, /activityEventsForUser\(c, user\)/);
+  assert.match(home, /notificationsForUser\(c, user\)/);
+  assert.match(home, /homeRecentWorks\(c, user\)/);
+  assert.match(home, /cacheableJson\(c, cache, \{/);
+
+  const visibleMembersHelper = sourceBlock(workerRoutes, "async function visibleMembers", "async function visibleGalleries");
+  assert.match(visibleMembersHelper, /SELECT \* FROM users WHERE disabled_at IS NULL/);
+  assert.match(visibleMembersHelper, /SELECT user_id, tag FROM medium_tags/);
   const members = routeBlock('app.get("/api/members"', 'app.get("/api/users/:handle"');
-  assert.ok(members.indexOf("prepareApiCache") < members.indexOf("SELECT * FROM users WHERE disabled_at IS NULL"));
+  assert.ok(members.indexOf("prepareApiCache") < members.indexOf("visibleMembers"));
   assert.match(members, /apiNotModified\(cache\)/);
-  assert.match(members, /cacheableJson\(c, cache, \{ members \}\)/);
+  assert.match(members, /cacheableJson\(c, cache, \{ members:/);
 
   const userProfile = routeBlock('app.get("/api/users/:handle"', 'app.patch("/api/users/me"');
   assert.ok(userProfile.indexOf("prepareApiCache") < userProfile.indexOf("SELECT * FROM users WHERE handle = ?"));
   assert.match(userProfile, /apiNotModified\(cache\)/);
   assert.match(userProfile, /cacheableJson\(c, cache, \{ user:/);
 
+  const visibleGalleriesHelper = sourceBlock(workerRoutes, "async function visibleGalleries", "const HOME_WORK_GALLERY_CAPS");
+  assert.match(visibleGalleriesHelper, /SELECT \* FROM galleries ORDER BY updated_at DESC/);
+  assert.match(visibleGalleriesHelper, /serializeGallery/);
   const galleries = routeBlock('app.get("/api/galleries"', 'app.post("/api/galleries/:id/pin"');
-  assert.ok(galleries.indexOf("prepareApiCache") < galleries.indexOf("SELECT * FROM galleries ORDER BY updated_at DESC"));
+  assert.ok(galleries.indexOf("prepareApiCache") < galleries.indexOf("visibleGalleries"));
   assert.match(galleries, /apiNotModified\(cache\)/);
-  assert.match(galleries, /cacheableJson\(c, cache, \{ galleries \}\)/);
+  assert.match(galleries, /cacheableJson\(c, cache, \{ galleries:/);
 
   const gallery = routeBlock('app.get("/api/galleries/:id"', 'app.get("/api/galleries/:id/crosspost-candidates"');
   assert.ok(gallery.indexOf("prepareApiCache") < gallery.indexOf("SELECT * FROM galleries WHERE id = ?"));
+  assert.ok(gallery.indexOf("apiNotModified(cache)") < gallery.indexOf("assertGalleryCapability"));
+  assert.match(gallery, /includeComments/);
+  assert.match(gallery, /`gallery:\$\{c\.req\.param\("id"\)\}:comments`/);
+  assert.match(gallery, /commentsForTarget\(c, user, "gallery", gallery\.id\)/);
   assert.match(gallery, /apiNotModified\(cache\)/);
   assert.match(gallery, /cacheableJson\(c, cache,/);
 
   const comments = routeBlock('app.get("/api/comments"', 'app.post("/api/reactions/:targetType/:targetId/heart"');
-  assert.ok(comments.indexOf("prepareApiCache") < comments.indexOf("SELECT comments.*, users.display_name"));
-  assert.match(comments, /cacheableJson\(c, cache, \{ comments \}\)/);
+  assert.ok(comments.indexOf("prepareApiCache") < comments.indexOf("commentsForTarget"));
+  assert.match(comments, /cacheableJson\(c, cache, \{ comments: await commentsForTarget/);
 
   const workComments = routeBlock('app.get("/api/works/:id/comments"', 'app.patch("/api/works/:id"');
   assert.ok(workComments.indexOf("prepareApiCache") < workComments.indexOf("SELECT comments.*, users.display_name"));
@@ -297,20 +358,68 @@ test("cacheable gallery and feed APIs use ETags before expensive reads", () => {
   assert.match(workComments, /cacheableJson\(c, cache, \{ comments \}\)/);
 
   const activity = routeBlock('app.get("/api/activity"', 'app.get("/api/notifications"');
-  assert.ok(activity.indexOf("prepareApiCache") < activity.indexOf("WITH recent AS"));
-  assert.match(activity, /cacheableJson\(c, cache, \{ events \}\)/);
+  assert.match(activity, /prepareApiCache/);
+  assert.match(activity, /apiNotModified\(cache\)/);
+  assert.match(activity, /cacheableJson\(c, cache, \{ events:/);
 
   const notifications = routeBlock('app.get("/api/notifications"', 'app.get("/api/notifications/poll"');
-  assert.ok(notifications.indexOf("prepareApiCache") < notifications.indexOf("WITH recent AS"));
-  assert.match(notifications, /cacheableJson\(c, cache, \{ notifications \}\)/);
+  assert.match(notifications, /prepareApiCache/);
+  assert.match(notifications, /apiNotModified\(cache\)/);
+  assert.match(notifications, /cacheableJson\(c, cache, \{ notifications:/);
 
   const clientCache = appSource.slice(appSource.indexOf("function isCacheableApiRequest"), appSource.indexOf("async function api"));
   assert.match(clientCache, /API_JSON_CACHEABLE_PATHS/);
+  assert.ok(appSource.includes('/^\\/api\\/home$/'));
   assert.ok(appSource.includes('/^\\/api\\/auth\\/me$/'));
   assert.ok(appSource.includes('/^\\/api\\/members$/'));
   assert.ok(appSource.includes('/^\\/api\\/users\\/[^/?]+$/'));
+  assert.ok(appSource.includes('/^\\/api\\/users\\/[^/?]+\\/works$/'));
+  assert.ok(appSource.includes('include=comments'));
   assert.ok(appSource.includes('/^\\/api\\/works\\/[^/?]+\\/comments$/'));
   assert.doesNotMatch(clientCache, /state\.me/);
+
+  const homePage = sourceBlock(appSource, "async function renderHome", "async function renderGalleries");
+  assert.match(homePage, /api\("\/api\/home"\)/);
+  assert.doesNotMatch(homePage, /api\("\/api\/activity"|api\("\/api\/notifications"|api\(`\/api\/galleries\/\$\{gallery\.id\}`\)/);
+
+  const galleryPage = sourceBlock(appSource, "async function renderGallery", "function bindCreateWork");
+  assert.match(galleryPage, /api\(`\/api\/galleries\/\$\{encodePath\(id\)\}\?include=comments`\)/);
+  assert.doesNotMatch(galleryPage, /api\(`\/api\/comments\?target_type=gallery/);
+  assert.match(galleryPage, /comments: data\.comments \|\| \[\]/);
+
+  const tagDetail = routeBlock('app.get("/api/tags/:tag"', 'app.patch("/api/comments/:id"');
+  assert.ok(tagDetail.indexOf("prepareApiCache") < tagDetail.indexOf("tagDetailForUser"));
+  assert.match(tagDetail, /apiNotModified\(cache\)/);
+  assert.match(tagDetail, /cacheableJson\(c, cache, data\)/);
+  assert.match(tagDetail, /FROM tag_index/);
+  assert.match(tagDetail, /tagIndexReady\(c\.env\.DB\)/);
+  assert.match(tagDetail, /legacyTagDetailForUser/);
+  assert.match(tagIndexSource, /export async function rebuildTagIndex/);
+  assert.ok(appSource.includes('/^\\/api\\/tags\\/[^/?]+$/'));
+});
+
+test("profiles use structured links and expose recent visible credited work", () => {
+  const memberWorks = routeBlock('app.get("/api/users/:handle/works"', "function normalizedProfileLinks");
+  assert.match(memberWorks, /work_collaborators\.user_id/);
+  assert.match(memberWorks, /works\.created_by = \? OR work_collaborators\.user_id IS NOT NULL/);
+  assert.ok(memberWorks.indexOf("canViewTarget") < memberWorks.indexOf("serializeWork"));
+  assert.match(memberWorks, /cacheableJson\(c, cache, \{ works \}\)/);
+
+  assert.match(accountViewSource, /data-profile-link-row/);
+  assert.match(accountViewSource, /name="link_site"/);
+  assert.match(accountViewSource, /name="link_url"/);
+  assert.doesNotMatch(accountViewSource, /Links JSON|Medium Tags|tag-form/);
+  assert.match(accountPageSource, /function profileLinks/);
+  assert.match(accountPageSource, /data-add-profile-link/);
+  assert.doesNotMatch(accountPageSource, /medium-tags|loadPopularTags|tag-form/);
+  assert.match(workerRoutes, /function normalizedProfileLinks/);
+  assert.match(workerRoutes, /site: site \|\| url\.hostname/);
+
+  assert.doesNotMatch(homeViewSource, /<p class="eyebrow">Recently Updated<\/p>/);
+  assert.match(homeViewSource, /Panel title="Recent Work"/);
+  assert.match(homeViewSource, /<WorkGrid works=\{works\}/);
+  assert.match(appSource, /api\(`\/api\/users\/\$\{encodePath\(handle\)\}\/works`\)/);
+  assert.match(commentsSource, /Add Gallery Comment/);
 });
 
 test("browser notification polling is etagged and throttled", () => {
@@ -393,6 +502,19 @@ test("markdown editor preview can be toggled off", () => {
   assert.match(appSource, /markdownAssetVariantUrl\(url, "thumbnail"\)/);
   assert.match(appSource, /function insertMarkdownImage/);
   assert.match(appSource, /cm\.setCursor\(cm\.posFromIndex\(startIndex \+ markdown\.length\)\)/);
+  assert.match(appSource, /api\("\/api\/tags\/popular"\)/);
+  assert.match(appSource, /function filteredTags/);
+  const tagSuggestions = sourceBlock(appSource, "async function ensurePopularTags", "function completionToken");
+  assert.match(tagSuggestions, /tagSuggestionsLoaded/);
+  assert.doesNotMatch(tagSuggestions, /if \(state\.popularTagsLoaded\) return/);
+  const completion = sourceBlock(appSource, "function completionToken", "function filteredMembers");
+  assert.ok(completion.includes("#([^\\s#]+)$"));
+  assert.match(appSource, /completionToken\(cm\.getLine\(cursor\.line\), cursor\.ch, \{ tags: true \}\)/);
+  assert.match(appSource, /cm\.on\("inputRead", scheduleUpdate\)/);
+  assert.match(appSource, /cm\.on\("changes", scheduleUpdate\)/);
+  assert.match(appSource, /activeContext\.kind === "tag" \? "No tags found" : "No members found"/);
+  assert.match(stylesSource, /\.EasyMDEContainer \.CodeMirror \.cm-header/);
+  assert.match(appSource, /editor\.codemirror\.refresh\(\)/);
 });
 
 test("protected media opens a swipeable gallery lightbox", () => {
@@ -411,6 +533,10 @@ test("protected media opens a swipeable gallery lightbox", () => {
   assert.match(mediaComponentSource, /ArrowRight/);
   assert.match(mediaComponentSource, /const closeToActiveWork = \(\) =>/);
   assert.match(mediaComponentSource, /navigate\(href\)/);
+  assert.match(mediaComponentSource, /requestAnimationFrame\(\(\) => navigate\(href\)\)/);
+  assert.match(mediaComponentSource, /primeWorkPayloadPreview\(preview\)/);
+  assert.match(mediaComponentSource, /contextmenu/);
+  assert.match(mediaComponentSource, /data-protected-image/);
   assert.ok(mediaComponentSource.includes('overlay.querySelector("[data-lightbox-close]")?.addEventListener("click", closeToActiveWork);'));
   assert.doesNotMatch(mediaComponentSource, /Open work|data-lightbox-open-work/);
   assert.match(mediaComponentSource, /function bindDoubleTapHearts/);
@@ -419,26 +545,85 @@ test("protected media opens a swipeable gallery lightbox", () => {
   assert.match(mediaComponentSource, /warmWorkRoute\(item\.targetId\)/);
   assert.match(reactionsSource, /method: "POST"/);
   assert.match(reactionsSource, /doubletap-heart-burst/);
+  assert.match(reactionsSource, /function heartBurstMarkup/);
+  assert.match(reactionsSource, /doubletap-heart-ring is-one/);
+  assert.match(reactionsSource, /doubletap-heart-ring is-two/);
+  assert.match(reactionsSource, /doubletap-heart-core/);
+  assert.match(reactionsSource, /function burstCenter/);
+  assert.match(reactionsSource, /querySelector\?\.\("\[data-lightbox-current-image\]"\)[\s\S]*querySelector\?\.\("img\[data-protected-image\]"\)/);
   assert.match(reactionsSource, /updatePrefetchedWorkReactions\(targetId/);
   assert.match(workPrefetchSource, /function warmWorkRoute/);
+  assert.match(workPrefetchSource, /primeWorkPayloadPreview/);
+  assert.match(workPrefetchSource, /loadFreshWorkPayload/);
+  assert.match(workPrefetchSource, /cachedWorkComments/);
   assert.match(workPrefetchSource, /loadWorkPayload/);
   assert.match(workPrefetchSource, /loadWorkComments/);
   assert.match(workTileSource, /data-doubletap-heart-type="work"/);
   assert.match(workTileSource, /data-doubletap-heart-id=\{work\.id\}/);
+  assert.match(workTileSource, /\?tag=\$\{encodePath\(tag\)\}/);
+  assert.match(workTileSource, /\?profile=\$\{encodePath\(profileHandle\)\}/);
   assert.doesNotMatch(workTileSource, /data-lightbox-item|data-lightbox-src|data-lightbox-gallery/);
   assert.match(workViewSource, /data-lightbox-item="true"/);
   assert.match(workViewSource, /data-doubletap-heart-type="work"/);
   assert.match(workViewSource, /data-lightbox-target-type="work"/);
   assert.match(workViewSource, /targetType: "work"/);
   assert.match(workViewSource, /data-lightbox-items=\{JSON\.stringify\(lightboxItems\)\}/);
-  assert.match(appSource, /lightboxWorks: galleryWorks\.length \? galleryWorks : \[work\]/);
+  assert.match(workViewSource, /lightboxContext\?\.type === "tag"/);
+  assert.match(workViewSource, /lightboxContext\?\.type === "profile"/);
+  assert.match(workViewSource, /<WorkCreditChips work=\{work\} collaborators=\{collaborators \|\| \[\]\} \/>[\s\S]*<GalleryAccessChips gallery=\{gallery\} className="is-inline" \/>/);
+  assert.match(workViewSource, /version\.thumbnail_url \|\| version\.preview_url/);
+  assert.match(workViewSource, /class="version-thumb"/);
+  assert.match(appSource, /function workListContextFromLocation/);
+  assert.match(appSource, /api\(`\/api\/tags\/\$\{encodePath\(context\.value\)\}`\)/);
+  assert.match(appSource, /api\(`\/api\/users\/\$\{encodePath\(context\.value\)\}\/works`\)/);
+  assert.match(appSource, /lightboxWorks: contextWorks\.length \? contextWorks : \[work\]/);
+  assert.match(appSource, /lightboxContext,/);
+  assert.match(homeViewSource, /<WorkGrid works=\{works\} profileHandle=\{user\.handle\}/);
+  assert.match(homeViewSource, /<WorkGrid works=\{data\.works\} tag=\{data\.tag\}/);
   assert.match(appSource, /loadWorkPayload\(id\)/);
+  assert.match(appSource, /renderWorkPage\(id, data, comments, \[\]\)/);
+  assert.match(appSource, /hydrateWorkPage\(serial, id, data\)/);
   assert.match(appSource, /loadWorkComments\(id\)/);
   assert.match(stylesSource, /media-lightbox-backdrop/);
   assert.match(stylesSource, /media-lightbox-track/);
   assert.match(stylesSource, /media-lightbox-nav/);
+  assert.match(stylesSource, /clip-path: inset\(0 1px\)/);
+  assert.match(stylesSource, /contain: paint/);
+  const lightboxImageCss = sourceBlock(stylesSource, ".media-lightbox-image {", ".media-lightbox-caption {");
+  assert.match(lightboxImageCss, /border: 0/);
+  assert.doesNotMatch(lightboxImageCss, /border: 1px/);
   assert.match(stylesSource, /doubletap-heart-burst/);
+  assert.match(stylesSource, /doubletap-heart-ring/);
+  assert.match(stylesSource, /doubletap-heart-core/);
+  assert.match(stylesSource, /@keyframes doubletap-heart-ring/);
   assert.match(stylesSource, /cursor: zoom-in/);
+});
+
+test("work detail avoids full gallery reserialization", () => {
+  const route = routeBlock('app.get("/api/works/:id"', 'app.get("/api/works/:id/comments"');
+  assert.match(route, /assertWorkCapability\(c, c\.req\.param\("id"\), "view"\)/);
+  assert.match(route, /const currentVersion = versions\.results\.find/);
+  assert.match(route, /serializeWork\(c\.env, currentUser\(c\), gate\.work!, \{ capabilityResult: gate, currentVersion, leanGalleries: true \}\)/);
+
+  const serializer = sourceBlock(workerEntry, "type WorkCapabilityResult", "async function serializeVersion");
+  assert.match(serializer, /leanWorkGallery/);
+  assert.match(serializer, /options\.capabilityResult \|\| await workCapabilities/);
+  assert.match(serializer, /options\.capabilityResult\?\.galleries/);
+  assert.match(serializer, /options\.leanGalleries && options\.capabilityResult\?\.galleryCaps/);
+});
+
+test("work detail lazily loads contributor role suggestions", () => {
+  const workPage = readFileSync("web/src/pages/works.ts", "utf8");
+  const hydrate = sourceBlock(workPage, "async function hydrateWorkPage", "async function renderWorkEdit");
+  assert.doesNotMatch(hydrate, /loadRoleSuggestions/);
+  assert.match(hydrate, /const supportPromise = needsSupportData \? loadGalleries\(\) : Promise\.resolve\(\)/);
+
+  const collaborators = sourceBlock(workPage, "function bindCollaboratorManagement", "function bindRemoveCollaborator");
+  assert.match(collaborators, /const ensureRoleDatalist = async \(\) =>/);
+  assert.match(collaborators, /await loadRoleSuggestions\(\)/);
+  assert.match(collaborators, /roleDatalist\("detail-work-role-options"\)/);
+  assert.match(collaborators, /addButton\?\.addEventListener\("click", async/);
+  assert.match(collaborators, /control\.addEventListener\("click", async/);
 });
 
 test("gallery comments and gallery reactions produce targetable notifications", () => {
@@ -550,6 +735,15 @@ test("global feedback request changes are owner-only and dismissals are per-user
   assert.match(dismiss, /assertWorkCapability\(c, c\.req\.param\("id"\), "view"\)/);
   assert.match(dismiss, /INSERT INTO feedback_request_dismissals/);
   assert.doesNotMatch(dismiss, /UPDATE works/);
+
+  assert.match(feedbackCleanupSource, /export async function clearExpiredFeedbackRequests/);
+  assert.match(feedbackCleanupSource, /datetime\(feedback_requested_at\) <= datetime\('now', '-7 days'\)/);
+  assert.match(feedbackCleanupSource, /bumpApiCacheToken\(db\)/);
+  assert.doesNotMatch(workerRoutes, /app\.use\("\/api\/\*", async \(c, next\) => \{\s*await clearExpiredFeedbackRequests/);
+  assert.match(workerEntry, /async scheduled\(_event: ScheduledEvent, env: Env\)/);
+  assert.match(workerEntry, /clearExpiredFeedbackRequests\(env\.DB\)/);
+  assert.match(workerEntry, /rebuildTagIndex\(env\.DB\)/);
+  assert.match(wrangler, /"triggers"[\s\S]*"crons"[\s\S]*"17 9 \* \* \*"/);
 });
 
 test("exports produce a zip archive with JSON, works CSV, and high-res WebP files", () => {
@@ -625,6 +819,8 @@ test("PWA install icons use instance app icons when configured", () => {
   assert.match(workerRoutes, /\$\{settingPrefix\}_updated_at/);
   assert.match(stylesSource, /display-mode: standalone/);
   assert.match(stylesSource, /safe-area-inset-bottom/);
+  assert.match(stylesSource, /height: max\(28px, env\(safe-area-inset-bottom\)\)/);
+  assert.doesNotMatch(stylesSource, /overscroll-behavior: none/);
   assert.match(stylesSource, /min-height: 100dvh/);
 });
 
@@ -676,9 +872,24 @@ test("server rules render from markdown and expose acceptance status", () => {
   assert.match(adminViewSource, /renderMarkdown\(rule\.body_markdown \|\| rule\.body_html\)/);
 });
 
+test("D1 row metrics are exposed on response headers", () => {
+  assert.match(workerEntry, /instrumentD1Env\(env\)/);
+  assert.match(workerEntry, /withD1MetricsHeaders\(response, instrumented\.metrics\)/);
+  assert.match(d1MetricsSource, /"X-D1-Rows-Read"/);
+  assert.match(d1MetricsSource, /"X-D1-Rows-Written"/);
+  assert.match(d1MetricsSource, /"X-D1-Query-Count"/);
+  assert.match(d1MetricsSource, /rows_read/);
+  assert.match(d1MetricsSource, /rows_written/);
+  assert.match(d1MetricsSource, /prop === "first"[\s\S]*target\.run/);
+  assert.match(d1MetricsSource, /prop === "batch"[\s\S]*recordD1Result/);
+});
+
 test("wrangler config keeps R2 private and omits S3 signing secrets", () => {
   const config = JSON.parse(wrangler.replace(/\/\/.*$/gm, ""));
+  assert.equal(config.d1_databases[0].database_name, "quietcollective");
   assert.equal(config.r2_buckets[0].bucket_name, "quietcollective-media");
+  assert.equal(config.queues.producers[0].queue, "quietcollective-jobs");
+  assert.equal(config.queues.consumers[0].queue, "quietcollective-jobs");
   assert.equal(config.vars.R2_BUCKET_NAME, "quietcollective-media");
   assert.equal(config.vars.R2_ACCOUNT_ID, "");
   assert.ok(!("R2_ACCESS_KEY_ID" in config.vars));

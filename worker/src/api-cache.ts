@@ -1,5 +1,6 @@
 import type { Context } from "hono";
 import { ulid } from "ulid";
+import { sign } from "./crypto";
 import { jsonText, now } from "./utils";
 
 export const API_CACHE_TOKEN_KEY = "api_cache_token";
@@ -63,9 +64,15 @@ export async function bumpApiCacheToken(db: D1Database) {
   return token;
 }
 
-export async function prepareApiCache(db: D1Database, userId: string, ifNoneMatch: string | null | undefined, scope: string): Promise<ApiCacheState> {
+async function apiCacheEtag(scope: string, userId: string, token: string, secret: string) {
+  const unsigned = `qc:${sanitizeEtagPart(scope)}:${sanitizeEtagPart(userId)}:${apiCacheRenderBucket()}:${sanitizeEtagPart(token)}`;
+  const signature = secret ? await sign(unsigned, secret) : "unsigned";
+  return `W/"${unsigned}:${signature}"`;
+}
+
+export async function prepareApiCache(db: D1Database, userId: string, ifNoneMatch: string | null | undefined, scope: string, secret = ""): Promise<ApiCacheState> {
   const token = await getApiCacheToken(db);
-  const etag = `W/"qc:${sanitizeEtagPart(scope)}:${sanitizeEtagPart(userId)}:${apiCacheRenderBucket()}:${sanitizeEtagPart(token)}"`;
+  const etag = await apiCacheEtag(scope, userId, token, secret);
   return { etag, fresh: etagMatches(ifNoneMatch, etag) };
 }
 

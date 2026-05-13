@@ -63,6 +63,31 @@ async function renderCurrentRoute() {
 setRouteRenderer(renderCurrentRoute);
 window.addEventListener("popstate", renderCurrentRoute);
 
+function documentIsPrerendering() {
+  return !!document.prerendering || document.visibilityState === "prerender";
+}
+
+function renderAfterPrerenderActivation() {
+  if (!documentIsPrerendering()) {
+    renderCurrentRoute();
+    return;
+  }
+
+  let rendered = false;
+  const renderOnceActive = () => {
+    if (rendered || documentIsPrerendering()) return;
+    rendered = true;
+    document.removeEventListener("prerenderingchange", renderOnceActive);
+    document.removeEventListener("visibilitychange", renderOnceActive);
+    window.removeEventListener("pageshow", renderOnceActive);
+    renderCurrentRoute();
+  };
+
+  document.addEventListener("prerenderingchange", renderOnceActive);
+  document.addEventListener("visibilitychange", renderOnceActive);
+  window.addEventListener("pageshow", renderOnceActive);
+}
+
 if ("serviceWorker" in navigator) {
   const buildVersion = document.querySelector('meta[name="qc-build"]')?.getAttribute("content") || "";
   const serviceWorkerUrl = buildVersion && buildVersion !== "dev" ? `/sw.js?v=${encodeURIComponent(buildVersion)}` : "/sw.js";
@@ -75,4 +100,4 @@ if ("serviceWorker" in navigator) {
   });
 }
 
-renderCurrentRoute();
+renderAfterPrerenderActivation();
