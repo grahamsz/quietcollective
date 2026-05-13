@@ -28,6 +28,7 @@ const installSource = readFileSync("web/src/app/install.ts", "utf8");
 const workTileSource = readFileSync("web/src/components/work-tile.tsx", "utf8");
 const workViewSource = readFileSync("web/src/views/works.tsx", "utf8");
 const utilsSource = readFileSync("worker/src/utils.ts", "utf8");
+const fontFacesSource = readFileSync("public/font-faces.css", "utf8");
 const stylesSource = readFileSync("public/styles.css", "utf8");
 const minifiedStylesSource = readFileSync("public/styles.min.css", "utf8");
 const easyMdeStylesSource = readFileSync("node_modules/easymde/dist/easymde.min.css", "utf8");
@@ -798,11 +799,19 @@ test("robots.txt tells crawlers to stay out", () => {
 test("release build serves the minified app stylesheet", () => {
   assert.match(indexPage, /href="\/styles\.min\.css\?v=[a-f0-9]{12}"/);
   assert.match(serviceWorker, /const STYLES_CSS_URL = "\/styles\.min\.css\?v=[a-f0-9]{12}";/);
-  assert.ok(minifiedStylesSource.length < stylesSource.length + easyMdeStylesSource.length);
+  assert.ok(minifiedStylesSource.length < stylesSource.length + easyMdeStylesSource.length + fontFacesSource.length);
   assert.match(minifiedStylesSource, /\.CodeMirror\{/);
   assert.match(minifiedStylesSource, /\.EasyMDEContainer \.CodeMirror/);
+  assert.match(fontFacesSource, /font-family: "Montserrat"/);
+  assert.match(fontFacesSource, /font-weight: 400 800/);
+  assert.match(fontFacesSource, /font-family: "Urbanist"/);
+  assert.match(fontFacesSource, /font-weight: 600 900/);
+  assert.match(minifiedStylesSource, /fonts\.gstatic\.com\/s\/montserrat/);
+  assert.match(minifiedStylesSource, /fonts\.gstatic\.com\/s\/urbanist/);
   assert.doesNotMatch(indexPage, /\/vendor\/easymde\//);
   assert.doesNotMatch(serviceWorker, /\/vendor\/easymde\//);
+  assert.doesNotMatch(indexPage, /fonts\.googleapis\.com/);
+  assert.doesNotMatch(minifiedStylesSource, /fonts\.googleapis\.com/);
 });
 
 test("human-readable API docs are published through worker routes", () => {
@@ -816,9 +825,7 @@ test("human-readable API docs are published through worker routes", () => {
 });
 
 test("PWA install icons use instance app icons when configured", () => {
-  assert.match(indexPage, /fonts\.googleapis\.com/);
   assert.match(indexPage, /fonts\.gstatic\.com/);
-  assert.match(indexPage, /family=Montserrat[\s\S]*family=Urbanist[\s\S]*display=swap/);
   assert.match(indexPage, /class="boot-screen initial-boot-screen"/);
   assert.match(stylesSource, /\.initial-boot-screen[\s\S]*position: fixed[\s\S]*inset: 0/);
   assert.match(stylesSource, /--font-sans: Montserrat/);

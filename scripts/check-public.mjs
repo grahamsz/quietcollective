@@ -3,6 +3,7 @@ import { access, readFile } from "node:fs/promises";
 const requiredFiles = [
   "public/index.html",
   "public/app.js",
+  "public/font-faces.css",
   "public/styles.css",
   "public/styles.min.css",
   "public/sw.js",
@@ -34,8 +35,15 @@ if (developersIndex !== developersPage) {
   throw new Error("public/developers/index.html must match public/developers.html");
 }
 const index = await readFile("public/index.html", "utf8");
+const styles = await readFile("public/styles.min.css", "utf8");
 if (index.includes("/vendor/easymde/") || serviceWorker.includes("/vendor/easymde/")) {
   throw new Error("EasyMDE must be bundled into the app JS and CSS, not loaded as public vendor assets");
+}
+if (index.includes("fonts.googleapis.com")) {
+  throw new Error("Google Fonts CSS must be folded into public/styles.min.css instead of loaded from fonts.googleapis.com");
+}
+if (!index.includes("https://fonts.gstatic.com") || !styles.includes("fonts.gstatic.com/s/montserrat/") || !styles.includes("fonts.gstatic.com/s/urbanist/")) {
+  throw new Error("public/index.html must preconnect to fonts.gstatic.com and public/styles.min.css must include direct font-face URLs");
 }
 if (!/<meta name="qc-build" content="[a-f0-9]{12}">/.test(index)) {
   throw new Error("public/index.html must include the build fingerprint meta tag");
