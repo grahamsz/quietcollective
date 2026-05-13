@@ -1,5 +1,5 @@
 // @ts-nocheck
-import { api, encodePath, ensureAuthed, loadGalleries, loadMembers, navigate, newestFirst, pageShell, setApp, state, syncBrowserNotifications, updateNotificationBell } from "../app/core";
+import { api, encodePath, ensureAuthed, loadForumBoards, loadGalleries, loadMembers, navigate, newestFirst, pageShell, setApp, state, syncBrowserNotifications, updateNotificationBell } from "../app/core";
 import { bindCommentForm, highlightLinkedComment } from "../app/comments";
 import { galleriesIndexView, homeView, memberProfileView, membersIndexView, tagPageView } from "../views/islands";
 
@@ -30,6 +30,7 @@ async function renderHome() {
   state.popularTagsLoaded = true;
   state.unreadNotifications = Number(data.unread_count || 0);
   state.notificationStatusLoaded = true;
+  if (!state.forumBoardsLoaded) await loadForumBoards();
   setApp(pageShell(homeView({
     instanceName: state.instance.name,
     subtitle: state.instance.homepage_subtitle || "",

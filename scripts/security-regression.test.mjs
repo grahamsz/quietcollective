@@ -161,6 +161,15 @@ test("forum boards and threads reuse comments, mentions, and activity targets", 
   assert.match(activitySource, /\/discussions\/threads\/\$\{row\.target_thread_id\}/);
   assert.match(forumPageSource, /bindCommentForm\("thread", id\)/);
   assert.match(appSource, /commentsPanel\("thread"/);
+  assert.match(appSource, /loadForumBoards/);
+  assert.match(appSource, /state\.forumBoards/);
+  assert.match(appSource, /sidebar-board-list/);
+  assert.match(appSource, /\/discussions\/new-board/);
+  assert.match(forumPageSource, /state\.me\?\.role !== "admin"/);
+
+  const forumView = readFileSync("web/src/views/forum.tsx", "utf8");
+  const discussionsIndex = sourceBlock(forumView, "export function DiscussionsIndexView", "export function NewDiscussionBoardView");
+  assert.doesNotMatch(discussionsIndex, /New Board|BoardForm/);
 });
 
 test("notifications use the joined activity context instead of the old N+1 formatter", () => {

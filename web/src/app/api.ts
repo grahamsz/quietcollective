@@ -129,6 +129,19 @@ async function loadGalleries() {
   return state.galleries;
 }
 
+async function loadForumBoards() {
+  try {
+    const data = await api("/api/forum/boards");
+    state.forumBoards = data.boards || [];
+    state.recentForumThreads = data.recent_threads || [];
+  } catch {
+    state.forumBoards = [];
+    state.recentForumThreads = [];
+  }
+  state.forumBoardsLoaded = true;
+  return { boards: state.forumBoards, recentThreads: state.recentForumThreads };
+}
+
 async function loadPopularTags() {
   try {
     const data = await api("/api/tags/popular");
@@ -170,6 +183,7 @@ async function ensureAuthed() {
     if (redirectToRequiredGate(state.me)) return false;
     const loads = [];
     if (!state.galleries.length) loads.push(loadGalleries());
+    if (!state.forumBoardsLoaded) loads.push(loadForumBoards());
     if (!state.popularTagsLoaded) loads.push(loadPopularTags());
     if (!state.notificationStatusLoaded) loads.push(loadNotificationStatus());
     if (loads.length) await Promise.all(loads);
@@ -178,11 +192,14 @@ async function ensureAuthed() {
   try {
     await refreshMe();
     if (redirectToRequiredGate(state.me)) return false;
-    await Promise.all([loadGalleries(), loadPopularTags(), loadNotificationStatus()]);
+    await Promise.all([loadGalleries(), loadForumBoards(), loadPopularTags(), loadNotificationStatus()]);
     syncBrowserNotifications().catch(() => undefined);
     return true;
   } catch (error) {
     state.me = null;
+    state.forumBoards = [];
+    state.forumBoardsLoaded = false;
+    state.recentForumThreads = [];
     state.popularTagsLoaded = false;
     state.notificationStatusLoaded = false;
     localStorage.removeItem("qc_token");
@@ -192,4 +209,4 @@ async function ensureAuthed() {
 }
 
 
-export { api, clearApiJsonCache, loadGalleries, loadMembers, loadNotificationStatus, loadPopularTags, loadRoleSuggestions, refreshMe, ensureAuthed };
+export { api, clearApiJsonCache, loadForumBoards, loadGalleries, loadMembers, loadNotificationStatus, loadPopularTags, loadRoleSuggestions, refreshMe, ensureAuthed };

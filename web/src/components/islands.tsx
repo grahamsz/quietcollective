@@ -16,7 +16,7 @@ import {
 import { ExportsView, ProfileView } from "../views/account";
 import { AdminInvitesView, AdminView } from "../views/admin";
 import { ForcePasswordChangeView, ForgotPasswordView, InviteView, LoginView, ResetPasswordView, RulesAcceptView, SetupDisabledView, SetupFormView } from "../views/auth";
-import { DiscussionBoardView, DiscussionsIndexView, DiscussionThreadView } from "../views/forum";
+import { DiscussionBoardView, DiscussionsIndexView, DiscussionThreadView, NewDiscussionBoardView } from "../views/forum";
 import { GalleriesIndexView, HomeView, MemberProfileView, MembersIndexView, TagPageView } from "../views/home";
 import { NotFoundView } from "../views/not-found";
 import { WorkCrosspostGalleryModalView, WorkDetailView, WorkEditView, WorkVersionsView } from "../views/works";
@@ -77,6 +77,7 @@ function islandNode(island: Island): ComponentChildren {
   if (island.component === "member-profile-view") return <MemberProfileView {...props} />;
   if (island.component === "tag-page-view") return <TagPageView {...props} />;
   if (island.component === "discussions-index-view") return <DiscussionsIndexView {...props} />;
+  if (island.component === "new-discussion-board-view") return <NewDiscussionBoardView {...props} />;
   if (island.component === "discussion-board-view") return <DiscussionBoardView {...props} />;
   if (island.component === "discussion-thread-view") return <DiscussionThreadView {...props} />;
   if (island.component === "setup-disabled-view") return <SetupDisabledView {...props} />;

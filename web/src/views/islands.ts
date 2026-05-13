@@ -92,8 +92,13 @@ export function tagPageView(data) {
 }
 
 /** Mounts the discussions index route. */
-export function discussionsIndexView({ boards, recentThreads, isAdmin }) {
-  return islandPlaceholder("discussions-index-view", { boards, recentThreads, isAdmin });
+export function discussionsIndexView({ boards, recentThreads }) {
+  return islandPlaceholder("discussions-index-view", { boards, recentThreads });
+}
+
+/** Mounts the admin-only new forum board route. */
+export function newDiscussionBoardView() {
+  return islandPlaceholder("new-discussion-board-view", {});
 }
 
 /** Mounts one forum board route. */

@@ -2072,6 +2072,7 @@ body.media-lightbox-open {
 }
 
 .sidebar-new-gallery,
+.sidebar-new-board,
 .sidebar-install-app,
 .admin-nav a {
   display: flex;
@@ -2099,14 +2100,16 @@ body.media-lightbox-open {
   pointer-events: none;
 }
 
-.sidebar-new-gallery {
+.sidebar-new-gallery,
+.sidebar-new-board {
   margin-top: 4px;
   border: 0;
   border-top: 1px solid var(--line);
   border-radius: 0;
 }
 
-.sidebar-new-gallery span {
+.sidebar-new-gallery span,
+.sidebar-new-board span {
   display: grid;
   width: 18px;
   height: 18px;
@@ -2117,7 +2120,8 @@ body.media-lightbox-open {
   line-height: 1;
 }
 
-.sidebar-new-gallery .icon {
+.sidebar-new-gallery .icon,
+.sidebar-new-board .icon {
   width: 12px;
   height: 12px;
 }
@@ -2128,6 +2132,37 @@ body.media-lightbox-open {
 
 .sidebar-community {
   border-top: 1px solid var(--line);
+}
+
+.sidebar-board-list {
+  display: grid;
+  gap: 2px;
+}
+
+.sidebar-board-list a {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 8px;
+  align-items: center;
+  min-height: 28px;
+  padding: 4px 8px;
+  border-radius: var(--radius);
+  color: var(--ink);
+  font-size: 0.78rem;
+  font-weight: 800;
+  text-decoration: none;
+}
+
+.sidebar-board-list span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.sidebar-board-list strong {
+  color: var(--subtle);
+  font-size: 0.68rem;
+  font-weight: 900;
 }
 
 .sidebar-tag-list {
@@ -2167,6 +2202,10 @@ body.media-lightbox-open {
 .admin-nav a[aria-current="page"],
 .sidebar-install-app:hover,
 .sidebar-gallery-list a:hover,
+.sidebar-board-list a:hover,
+.sidebar-board-list a[aria-current="page"],
+.sidebar-new-board:hover,
+.sidebar-new-board[aria-current="page"],
 .sidebar-view-all:hover,
 .nav-link:hover,
 .nav-link[aria-current="page"] {

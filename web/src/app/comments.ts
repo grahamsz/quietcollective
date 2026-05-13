@@ -1,5 +1,5 @@
 // @ts-nocheck
-import { api, bindProtectedMedia, button, empty, escapeHtml, field, iconButton, markdownHint, panel, protectedImage, reactionButton, renderMarkdown, renderMarkdownInline, renderRoute, relativeTime, stripMarkdownImages, syncMarkdownEditors, toast } from "./core";
+import { api, bindProtectedMedia, button, empty, escapeHtml, field, iconButton, markdownHint, panel, protectedImage, reactionButton, renderMarkdown, renderMarkdownInline, renderRoute, relativeTime, state, stripMarkdownImages, syncMarkdownEditors, toast } from "./core";
 
 /** Picks the display author for comment cards used across work, gallery, and profile pages. */
 function commentAuthor(comment) {
@@ -97,6 +97,7 @@ function bindCommentForm(defaultType, defaultId) {
       if (field(form, "parent_comment_id")?.value) body.parent_comment_id = field(form, "parent_comment_id").value;
       try {
         await api("/api/comments", { method: "POST", body });
+        if (body.target_type === "thread") state.forumBoardsLoaded = false;
         toast(body.parent_comment_id ? "Reply posted" : "Comment posted");
         renderRoute();
       } catch (error) {

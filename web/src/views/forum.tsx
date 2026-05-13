@@ -107,7 +107,7 @@ function ThreadForm({ board }) {
   );
 }
 
-export function DiscussionsIndexView({ boards, recentThreads, isAdmin }) {
+export function DiscussionsIndexView({ boards, recentThreads }) {
   return (
     <section class="view forum-view">
       <div class="view-header">
@@ -116,7 +116,6 @@ export function DiscussionsIndexView({ boards, recentThreads, isAdmin }) {
           <h1>Boards</h1>
         </div>
       </div>
-      {isAdmin ? <Panel title="New Board"><BoardForm /></Panel> : null}
       <div class="home-lower-grid">
         <Panel title="Boards">
           <div class="card-grid">{boards?.length ? boards.map((board) => <BoardCard board={board} key={board.id} />) : <Empty message="No boards yet." />}</div>
@@ -125,6 +124,20 @@ export function DiscussionsIndexView({ boards, recentThreads, isAdmin }) {
           <ThreadList threads={recentThreads || []} emptyMessage="No discussion yet." />
         </Panel>
       </div>
+    </section>
+  );
+}
+
+export function NewDiscussionBoardView() {
+  return (
+    <section class="view forum-view">
+      <div class="view-header">
+        <div>
+          <p class="eyebrow"><a href="/discussions" data-link>Discussions</a></p>
+          <h1>New board</h1>
+        </div>
+      </div>
+      <Panel title="Board Details"><BoardForm /></Panel>
     </section>
   );
 }

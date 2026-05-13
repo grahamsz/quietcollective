@@ -1,7 +1,7 @@
 // @ts-nocheck
-import { api, encodePath, ensureAuthed, formDataObject, navigate, pageShell, renderRoute, setApp, state, syncMarkdownEditors, toast } from "../app/core";
+import { api, encodePath, ensureAuthed, formDataObject, loadForumBoards, navigate, pageShell, renderRoute, setApp, state, syncMarkdownEditors, toast } from "../app/core";
 import { bindCommentForm, highlightLinkedComment } from "../app/comments";
-import { discussionBoardView, discussionsIndexView, discussionThreadView } from "../views/islands";
+import { discussionBoardView, discussionsIndexView, discussionThreadView, newDiscussionBoardView } from "../views/islands";
 
 async function submitWithLock(form, handler) {
   syncMarkdownEditors(form);
@@ -28,6 +28,7 @@ function bindForumBoardForms() {
         const data = creating
           ? await api("/api/forum/boards", { method: "POST", body })
           : await api(`/api/forum/boards/${encodePath(boardId)}`, { method: "PATCH", body });
+        state.forumBoardsLoaded = false;
         if (creating) navigate(`/discussions/boards/${encodePath(data.board.slug || data.board.id)}`);
         else renderRoute();
       });
@@ -44,6 +45,7 @@ function bindForumThreadForm() {
     void submitWithLock(form, async (body) => {
       const boardId = form.dataset.boardId;
       const data = await api(`/api/forum/boards/${encodePath(boardId)}/threads`, { method: "POST", body });
+      state.forumBoardsLoaded = false;
       const hash = data.first_comment_id ? `#comment-${encodePath(data.first_comment_id)}` : "";
       navigate(`/discussions/threads/${encodePath(data.thread.id)}${hash}`);
     });
@@ -52,12 +54,19 @@ function bindForumThreadForm() {
 
 async function renderDiscussions() {
   if (!(await ensureAuthed())) return;
-  const data = await api("/api/forum/boards");
+  const data = state.forumBoardsLoaded
+    ? { boards: state.forumBoards, recentThreads: state.recentForumThreads }
+    : await loadForumBoards();
   setApp(pageShell(discussionsIndexView({
-    boards: data.boards || [],
-    recentThreads: data.recent_threads || [],
-    isAdmin: state.me?.role === "admin",
+    boards: data.boards,
+    recentThreads: data.recentThreads,
   })));
+}
+
+async function renderNewDiscussionBoard() {
+  if (!(await ensureAuthed())) return;
+  if (state.me?.role !== "admin") return navigate("/discussions");
+  setApp(pageShell(newDiscussionBoardView()));
   bindForumBoardForms();
 }
 
@@ -85,4 +94,4 @@ async function renderDiscussionThread(id) {
   highlightLinkedComment();
 }
 
-export { renderDiscussionBoard, renderDiscussionThread, renderDiscussions };
+export { renderDiscussionBoard, renderDiscussionThread, renderDiscussions, renderNewDiscussionBoard };

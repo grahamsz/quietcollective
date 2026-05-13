@@ -40,6 +40,7 @@ function pageShell(content, options = {}) {
     .sort(newestFirst)
     .slice(0, 8);
   const popularTags = (state.popularTags || []).slice(0, 5);
+  const forumBoards = (state.forumBoards || []).slice(0, 8);
   const source = state.instance.source_code_url
     ? `<a class="source-link is-visible" href="${escapeHtml(state.instance.source_code_url)}" rel="noreferrer">Source Code</a>`
     : "";
@@ -57,8 +58,13 @@ function pageShell(content, options = {}) {
           <a href="/galleries/new" class="sidebar-new-gallery" data-link><span>${icon("plus")}</span><strong>New Gallery</strong></a>
         </section>
         <section class="sidebar-section sidebar-community">
-          <h2>Community</h2>
-          <nav class="admin-nav" aria-label="Community"><a href="/discussions" ${location.pathname.startsWith("/discussions") ? 'aria-current="page"' : ""} data-link>${icon("quote")}<span>Discussions</span></a></nav>
+          <h2>Boards</h2>
+          ${forumBoards.length ? `<div class="sidebar-board-list">${forumBoards.map((board) => {
+            const href = `/discussions/boards/${encodePath(board.slug || board.id)}`;
+            const current = location.pathname === href || location.pathname === `/discussions/boards/${encodePath(board.id)}`;
+            return `<a href="${href}" ${current ? 'aria-current="page"' : ""} data-link><span>${escapeHtml(board.title)}</span><strong>${escapeHtml(String(board.thread_count || 0))}</strong></a>`;
+          }).join("")}</div>` : `<div class="empty-state compact">No boards yet.</div>`}
+          ${state.me?.role === "admin" ? `<a href="/discussions/new-board" class="sidebar-new-board" ${location.pathname === "/discussions/new-board" ? 'aria-current="page"' : ""} data-link><span>${icon("plus")}</span><strong>New Board</strong></a>` : ""}
         </section>
         ${popularTags.length ? `<section class="sidebar-section sidebar-tags"><h2>Popular Tags</h2><div class="sidebar-tag-list">${popularTags.map((tag) => `<a href="/tags/${encodePath(tag.tag)}" data-link><span>#${escapeHtml(tag.tag)}</span><small>${escapeHtml(String(tag.count || 0))}</small></a>`).join("")}</div></section>` : ""}
         <div class="sidebar-foot">
@@ -106,6 +112,9 @@ function bindCommonActions() {
     await api("/api/auth/logout", { method: "POST" }).catch(() => undefined);
     state.token = "";
     state.me = null;
+    state.forumBoards = [];
+    state.forumBoardsLoaded = false;
+    state.recentForumThreads = [];
     state.popularTags = [];
     state.popularTagsLoaded = false;
     state.unreadNotifications = 0;
