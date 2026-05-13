@@ -20,9 +20,10 @@ import {
   visibleGalleryIds,
   visibleWorkIds,
 } from "./activity";
-import { apiNotModified, bumpApiCacheToken, cacheableJson, etagMatches, mutatingApiRequest, sanitizeEtagPart } from "./api-cache";
+import { apiNotModified, cacheableJson, etagMatches, mutatingApiRequest, sanitizeEtagPart } from "./api-cache";
 import { base64Url, decryptString, encryptString, getSecret, sha256 } from "./crypto";
 import { sendEmail, smtpConfigured, type SmtpConfig } from "./email";
+import { bumpCachedApiCacheToken } from "./instance-cache";
 import { r2PresignedGetUrl, readSignedMediaPayload, signedMediaUrl } from "./media";
 import { createSession, expiredSessionCookie, sessionCookie } from "./sessions";
 import { rebuildTagIndex, reindexCommentTags, reindexGalleryTags, reindexUserTags, reindexWorkTags, removeTagIndexForTarget, tagIndexReady } from "./tag-index";
@@ -331,7 +332,7 @@ app.use("*", cors({
 app.use("*", async (c, next) => {
   await next();
   if (mutatingApiRequest(c)) {
-    await bumpApiCacheToken(c.env.DB).catch(() => undefined);
+    await bumpCachedApiCacheToken(c.env).catch(() => undefined);
   }
   if (c.req.path.startsWith("/api/") && !c.req.path.startsWith("/api/media/")) {
     if (!c.res.headers.has("Cache-Control")) c.header("Cache-Control", "no-store");

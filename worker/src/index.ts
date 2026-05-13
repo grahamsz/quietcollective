@@ -1,13 +1,18 @@
 import { Hono, type Next } from "hono";
 import { ulid } from "ulid";
 import {
-  bumpApiCacheToken,
-  prepareApiCache as prepareApiCacheState,
+  prepareApiCacheWithToken,
 } from "./api-cache";
 import type { AppContext, Ctx } from "./app-context";
 import { getSecret } from "./crypto";
 import { instrumentD1Env, withD1MetricsHeaders } from "./d1-metrics";
 import { clearExpiredFeedbackRequests } from "./feedback-cleanup";
+import {
+  bumpCachedApiCacheToken,
+  readCachedApiCacheToken,
+  readCachedPublicInstanceSettings,
+  writeCachedPublicInstanceSettings,
+} from "./instance-cache";
 import { signedMediaUrl } from "./media";
 import { canCrosspostToGallery, ownsGallery, resolveGalleryCapabilities, resolveWorkCapabilities, type GalleryMemberPermissions } from "./permissions";
 import { registerRoutes } from "./routes";
@@ -43,7 +48,6 @@ const OWNER_CAPABILITIES: GalleryCapabilities = {
   manage_collaborators: true,
 };
 
-const PUBLIC_INSTANCE_SETTINGS_CACHE_KEY = "instance:public-settings:v1";
 const PUBLIC_INSTANCE_SETTINGS_CACHE_VERSION = 3;
 const PUBLIC_INSTANCE_SETTING_KEYS = [
   "instance_name",
@@ -118,7 +122,8 @@ type PublicInstanceSettings = {
 };
 
 async function prepareApiCache(c: Ctx, scope: string) {
-  return prepareApiCacheState(c.env.DB, currentUser(c).id, c.req.header("if-none-match"), scope, getSecret(c.env));
+  const token = await readCachedApiCacheToken(c.env);
+  return prepareApiCacheWithToken(currentUser(c).id, c.req.header("if-none-match"), scope, token, getSecret(c.env));
 }
 
 async function readBody(c: Ctx) {
@@ -338,14 +343,12 @@ async function publicInstanceSettingsFromD1(env: Env) {
 }
 
 async function publicInstanceSettings(env: Env, options: { refresh?: boolean } = {}) {
-  if (!options.refresh && env.SETTINGS_CACHE) {
-    const cached = await env.SETTINGS_CACHE
-      .get<PublicInstanceSettings>(PUBLIC_INSTANCE_SETTINGS_CACHE_KEY, { type: "json", cacheTtl: 60 })
-      .catch(() => null);
+  if (!options.refresh) {
+    const cached = await readCachedPublicInstanceSettings<PublicInstanceSettings>(env, PUBLIC_INSTANCE_SETTINGS_CACHE_VERSION);
     if (cached?.cache_version === PUBLIC_INSTANCE_SETTINGS_CACHE_VERSION) return cached;
   }
   const settings = await publicInstanceSettingsFromD1(env);
-  await env.SETTINGS_CACHE?.put(PUBLIC_INSTANCE_SETTINGS_CACHE_KEY, JSON.stringify(settings)).catch(() => undefined);
+  await writeCachedPublicInstanceSettings(env, settings, PUBLIC_INSTANCE_SETTINGS_CACHE_VERSION).catch(() => undefined);
   return settings;
 }
 
@@ -596,7 +599,7 @@ async function notify(env: Env, eventId: string, userId: string, type: string, b
   await env.DB.prepare(
     "INSERT INTO notifications (id, user_id, event_id, type, body, created_at) VALUES (?, ?, ?, ?, ?, ?)",
   ).bind(ulid(), userId, eventId, type, body, now()).run();
-  await bumpApiCacheToken(env.DB).catch(() => undefined);
+  await bumpCachedApiCacheToken(env).catch(() => undefined);
   await sendBrowserPushNotifications(env, userId).catch((error: unknown) => console.error("web push notification failed", error));
 }
 
@@ -1119,8 +1122,10 @@ export default {
     }
   },
   async scheduled(_event: ScheduledEvent, env: Env) {
-    await clearExpiredFeedbackRequests(env.DB);
+    await clearExpiredFeedbackRequests(env);
     await rebuildTagIndex(env.DB);
-    await bumpApiCacheToken(env.DB).catch(() => undefined);
+    await bumpCachedApiCacheToken(env).catch(() => undefined);
   },
 };
+
+export { InstanceCacheObject } from "./instance-cache";

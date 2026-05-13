@@ -1,7 +1,8 @@
-import { bumpApiCacheToken } from "./api-cache";
+import { bumpCachedApiCacheToken } from "./instance-cache";
+import type { Env } from "./types";
 
-export async function clearExpiredFeedbackRequests(db: D1Database) {
-  const result = await db.prepare(
+export async function clearExpiredFeedbackRequests(env: Env) {
+  const result = await env.DB.prepare(
     `UPDATE works
      SET feedback_requested = 0,
          feedback_requested_at = NULL,
@@ -10,5 +11,5 @@ export async function clearExpiredFeedbackRequests(db: D1Database) {
        AND feedback_requested_at IS NOT NULL
        AND datetime(feedback_requested_at) <= datetime('now', '-7 days')`,
   ).run();
-  if ((result.meta as { changes?: number } | undefined)?.changes) await bumpApiCacheToken(db);
+  if ((result.meta as { changes?: number } | undefined)?.changes) await bumpCachedApiCacheToken(env);
 }

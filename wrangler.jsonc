@@ -35,6 +35,22 @@
       "bucket_name": "quietcollective-media"
     }
   ],
+  "durable_objects": {
+    "bindings": [
+      {
+        "name": "INSTANCE_CACHE",
+        "class_name": "InstanceCacheObject"
+      }
+    ]
+  },
+  "migrations": [
+    {
+      "tag": "v1_instance_cache_object",
+      "new_sqlite_classes": [
+        "InstanceCacheObject"
+      ]
+    }
+  ],
   "queues": {
     "producers": [
       {
@@ -60,6 +76,7 @@
     "SITE_URL": "",
     "SOURCE_CODE_URL": "",
     "R2_ACCOUNT_ID": "",
-    "R2_BUCKET_NAME": "quietcollective-media"
+    "R2_BUCKET_NAME": "quietcollective-media",
+    "INSTANCE_CACHE_LOCATION_HINT": "wnam"
   }
 }

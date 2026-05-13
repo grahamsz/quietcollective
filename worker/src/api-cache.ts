@@ -42,7 +42,7 @@ export function etagMatches(header: string | null | undefined, etag: string) {
   });
 }
 
-async function getApiCacheToken(db: D1Database) {
+export async function readApiCacheTokenFromD1(db: D1Database) {
   const row = await db.prepare("SELECT value_json FROM instance_settings WHERE key = ?").bind(API_CACHE_TOKEN_KEY).first<{ value_json: string }>();
   try {
     return row?.value_json ? JSON.parse(row.value_json).value || "0" : "0";
@@ -51,8 +51,11 @@ async function getApiCacheToken(db: D1Database) {
   }
 }
 
-export async function bumpApiCacheToken(db: D1Database) {
-  const token = `${Date.now().toString(36)}_${ulid()}`;
+export function createApiCacheToken() {
+  return `${Date.now().toString(36)}_${ulid()}`;
+}
+
+export async function writeApiCacheTokenToD1(db: D1Database, token: string) {
   const timestamp = now();
   await db.prepare(
     `INSERT INTO instance_settings (key, value_json, description, created_at, updated_at)
@@ -61,6 +64,11 @@ export async function bumpApiCacheToken(db: D1Database) {
        value_json = excluded.value_json,
        updated_at = excluded.updated_at`,
   ).bind(API_CACHE_TOKEN_KEY, jsonText({ value: token }), timestamp, timestamp).run();
+}
+
+export async function bumpApiCacheToken(db: D1Database) {
+  const token = createApiCacheToken();
+  await writeApiCacheTokenToD1(db, token);
   return token;
 }
 
@@ -70,10 +78,14 @@ async function apiCacheEtag(scope: string, userId: string, token: string, secret
   return `W/"${unsigned}:${signature}"`;
 }
 
-export async function prepareApiCache(db: D1Database, userId: string, ifNoneMatch: string | null | undefined, scope: string, secret = ""): Promise<ApiCacheState> {
-  const token = await getApiCacheToken(db);
+export async function prepareApiCacheWithToken(userId: string, ifNoneMatch: string | null | undefined, scope: string, token: string, secret = ""): Promise<ApiCacheState> {
   const etag = await apiCacheEtag(scope, userId, token, secret);
   return { etag, fresh: etagMatches(ifNoneMatch, etag) };
+}
+
+export async function prepareApiCache(db: D1Database, userId: string, ifNoneMatch: string | null | undefined, scope: string, secret = ""): Promise<ApiCacheState> {
+  const token = await readApiCacheTokenFromD1(db);
+  return prepareApiCacheWithToken(userId, ifNoneMatch, scope, token, secret);
 }
 
 export function apiNotModified(cache: ApiCacheState) {

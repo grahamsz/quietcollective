@@ -4,8 +4,9 @@ export interface Env {
   ASSETS: Fetcher;
   DB: D1Database;
   MEDIA: R2Bucket;
-  SETTINGS_CACHE?: KVNamespace;
+  INSTANCE_CACHE?: DurableObjectNamespace;
   JOBS?: Queue;
+  INSTANCE_CACHE_LOCATION_HINT?: string;
   JWT_SECRET?: string;
   ADMIN_SETUP_TOKEN?: string;
   INSTANCE_NAME?: string;

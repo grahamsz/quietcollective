@@ -5,6 +5,7 @@ const workerEntry = readFileSync("worker/src/index.ts", "utf8");
 const workerRoutes = readFileSync("worker/src/routes.ts", "utf8");
 const d1MetricsSource = readFileSync("worker/src/d1-metrics.ts", "utf8");
 const feedbackCleanupSource = readFileSync("worker/src/feedback-cleanup.ts", "utf8");
+const instanceCacheSource = readFileSync("worker/src/instance-cache.ts", "utf8");
 const sessionsSource = readFileSync("worker/src/sessions.ts", "utf8");
 const workerConstants = readFileSync("worker/src/constants.ts", "utf8");
 const webPushSource = readFileSync("worker/src/web-push.ts", "utf8");
@@ -295,10 +296,13 @@ test("cacheable gallery and feed APIs use ETags before expensive reads", () => {
   assert.match(helpers, /bumpApiCacheToken/);
   assert.match(helpers, /await sign\(unsigned, secret\)/);
   assert.ok(helpers.includes('replace(/^W\\//i, "")'));
+  assert.match(workerEntry, /readCachedApiCacheToken\(c\.env\)/);
+  assert.match(instanceCacheSource, /API_CACHE_TOKEN_STORAGE_KEY = "api-cache-token:v1"/);
+  assert.match(instanceCacheSource, /readApiCacheTokenFromD1\(this\.env\.DB\)/);
 
   const middleware = routeBlock('app.use("*", async (c, next) => {', 'app.get("/api/health"');
   assert.match(middleware, /mutatingApiRequest\(c\)/);
-  assert.match(middleware, /bumpApiCacheToken\(c\.env\.DB\)/);
+  assert.match(middleware, /bumpCachedApiCacheToken\(c\.env\)/);
   assert.match(middleware, /!c\.res\.headers\.has\("Cache-Control"\)/);
 
   const authMe = routeBlock('app.get("/api/auth/me"', 'app.patch("/api/auth/password"');
@@ -738,10 +742,10 @@ test("global feedback request changes are owner-only and dismissals are per-user
 
   assert.match(feedbackCleanupSource, /export async function clearExpiredFeedbackRequests/);
   assert.match(feedbackCleanupSource, /datetime\(feedback_requested_at\) <= datetime\('now', '-7 days'\)/);
-  assert.match(feedbackCleanupSource, /bumpApiCacheToken\(db\)/);
+  assert.match(feedbackCleanupSource, /bumpCachedApiCacheToken\(env\)/);
   assert.doesNotMatch(workerRoutes, /app\.use\("\/api\/\*", async \(c, next\) => \{\s*await clearExpiredFeedbackRequests/);
   assert.match(workerEntry, /async scheduled\(_event: ScheduledEvent, env: Env\)/);
-  assert.match(workerEntry, /clearExpiredFeedbackRequests\(env\.DB\)/);
+  assert.match(workerEntry, /clearExpiredFeedbackRequests\(env\)/);
   assert.match(workerEntry, /rebuildTagIndex\(env\.DB\)/);
   assert.match(wrangler, /"triggers"[\s\S]*"crons"[\s\S]*"17 9 \* \* \*"/);
 });
@@ -825,14 +829,17 @@ test("PWA install icons use instance app icons when configured", () => {
 });
 
 test("public instance settings are cached outside per-key D1 reads", () => {
-  assert.match(workerEntry, /PUBLIC_INSTANCE_SETTINGS_CACHE_KEY = "instance:public-settings:v1"/);
   assert.match(workerEntry, /PUBLIC_INSTANCE_SETTINGS_CACHE_VERSION = 3/);
   assert.match(workerEntry, /"site_url"/);
   assert.match(workerEntry, /site_url: valueFromSettings\(values, "site_url", env\.SITE_URL \|\| ""\)/);
-  assert.match(workerEntry, /SETTINGS_CACHE/);
   assert.match(workerEntry, /SELECT key, value_json FROM instance_settings WHERE key IN/);
-  assert.match(workerEntry, /\.get<PublicInstanceSettings>\(PUBLIC_INSTANCE_SETTINGS_CACHE_KEY, \{ type: "json", cacheTtl: 60 \}\)/);
-  assert.match(workerEntry, /\.put\(PUBLIC_INSTANCE_SETTINGS_CACHE_KEY, JSON\.stringify\(settings\)\)/);
+  assert.doesNotMatch(workerEntry, /env\.SETTINGS_CACHE/);
+  assert.match(instanceCacheSource, /export class InstanceCacheObject implements DurableObject/);
+  assert.match(instanceCacheSource, /PUBLIC_SETTINGS_STORAGE_KEY = "public-settings:v1"/);
+  assert.match(workerEntry, /readCachedPublicInstanceSettings<PublicInstanceSettings>\(env, PUBLIC_INSTANCE_SETTINGS_CACHE_VERSION\)/);
+  assert.match(workerEntry, /writeCachedPublicInstanceSettings\(env, settings, PUBLIC_INSTANCE_SETTINGS_CACHE_VERSION\)/);
+  assert.match(wrangler, /"durable_objects"[\s\S]*"INSTANCE_CACHE"[\s\S]*"InstanceCacheObject"/);
+  assert.match(wrangler, /"new_sqlite_classes"[\s\S]*"InstanceCacheObject"/);
   assert.match(workerRoutes, /refreshPublicInstanceSettings\(c\.env\)/);
   const manifestBlock = routeBlock('app.get("/manifest.webmanifest"', 'app.get("/api/setup/status"');
   assert.doesNotMatch(manifestBlock, /getSetting\(c\.env\.DB/);
