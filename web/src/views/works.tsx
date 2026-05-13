@@ -631,7 +631,7 @@ export function WorkVersionsView({ id, work, versions }) {
   return (
     <section class="view">
       <div class="view-header"><div><p class="eyebrow">Versions</p><h1>{work.title}</h1></div><div class="toolbar"><a href={`/works/${id}`} class="button" data-link>Back to work</a></div></div>
-      <div class="grid">
+      <div class="version-grid">
         {(versions || []).length
           ? versions.map((version) => {
             const thumb = version.thumbnail_url || version.preview_url || "";

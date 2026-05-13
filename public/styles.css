@@ -808,6 +808,13 @@ h3 {
   object-fit: cover;
 }
 
+.version-grid {
+  display: grid;
+  justify-content: start;
+  gap: 12px;
+  grid-template-columns: repeat(auto-fill, minmax(180px, 240px));
+}
+
 .meta-row,
 .inline-meta {
   display: flex;
