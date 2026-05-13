@@ -468,7 +468,7 @@ export function WorkDetailView({ id, work, gallery, commentsHtml, reactionButton
           <WorkDescriptionEditor id={id} work={work} />
           <div class="gallery-access-inline">
             <WorkCreditChips work={work} collaborators={collaborators || []} />
-            <GalleryAccessChips gallery={gallery} className="is-inline" />
+            <GalleryAccessChips gallery={gallery} className="is-inline" kinds={["view"]} />
             <span class="work-meta-actions">
               <RawInline html={reactionButtonHtml} />
               <a href={`/works/${id}/versions`} class="button" data-link>Versions</a>

@@ -15,6 +15,7 @@ type GalleryTileProps = {
 type GalleryAccessChipsProps = {
   gallery: Gallery;
   className?: string;
+  kinds?: AccessKind[];
 };
 
 type AccessKind = "submit" | "view";
@@ -132,11 +133,10 @@ function GalleryAccessChip({ gallery, kind }: { gallery: Gallery; kind: AccessKi
 }
 
 /** Displays ownership and visibility chips on gallery tiles, gallery detail, and work detail. */
-export function GalleryAccessChips({ gallery, className = "" }: GalleryAccessChipsProps) {
+export function GalleryAccessChips({ gallery, className = "", kinds = ["submit", "view"] }: GalleryAccessChipsProps) {
   return (
     <span class={`gallery-access-stack${className ? ` ${className}` : ""}`}>
-      <GalleryAccessChip gallery={gallery} kind="submit" />
-      <GalleryAccessChip gallery={gallery} kind="view" />
+      {kinds.map((kind) => <GalleryAccessChip gallery={gallery} kind={kind} key={kind} />)}
     </span>
   );
 }
