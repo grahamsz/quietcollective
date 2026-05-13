@@ -1,5 +1,7 @@
 import { escapeHtml } from "../lib/utils";
 import { navigate } from "../app/routing";
+import { heartTarget } from "../app/reactions";
+import { warmWorkRoute } from "../app/work-prefetch";
 import { icon } from "./icons";
 
 type LightboxItem = {
@@ -7,9 +9,22 @@ type LightboxItem = {
   alt: string;
   title: string;
   href: string;
+  targetType: string;
+  targetId: string;
 };
 
 let closeActiveLightbox: (() => void) | null = null;
+const DOUBLE_TAP_DELAY_MS = 280;
+const DOUBLE_TAP_DISTANCE_PX = 42;
+
+type PendingTap = {
+  timer: number;
+  time: number;
+  x: number;
+  y: number;
+};
+
+const pendingTaps = new WeakMap<HTMLElement, PendingTap>();
 
 /** Renders protected media markup for string-rendered pages and modal templates. */
 export function protectedImage(src: string, alt = "") {
@@ -31,6 +46,8 @@ function lightboxData(element: HTMLElement): LightboxItem | null {
     alt: element.dataset.lightboxAlt || image?.alt || "",
     title: element.dataset.lightboxTitle || image?.alt || "",
     href: element.dataset.lightboxHref || "",
+    targetType: element.dataset.lightboxTargetType || element.dataset.doubletapHeartType || "",
+    targetId: element.dataset.lightboxTargetId || element.dataset.doubletapHeartId || "",
   };
 }
 
@@ -45,6 +62,8 @@ function parsedLightboxItems(element: HTMLElement) {
         alt: String(item?.alt || ""),
         title: String(item?.title || ""),
         href: String(item?.href || ""),
+        targetType: String(item?.targetType || item?.target_type || ""),
+        targetId: String(item?.targetId || item?.target_id || ""),
       }))
       .filter((item) => item.src);
     if (!items.length) return null;
@@ -121,6 +140,9 @@ function openMediaLightbox(origin: HTMLElement) {
   const next = overlay.querySelector<HTMLButtonElement>("[data-lightbox-next]")!;
 
   const itemAt = (itemIndex: number) => items[(itemIndex + items.length) % items.length];
+  const warmItemRoute = (item: LightboxItem) => {
+    if (item.targetType === "work" && item.targetId) warmWorkRoute(item.targetId);
+  };
   const setImage = (image: HTMLImageElement, item: LightboxItem) => {
     image.src = item.src;
     image.alt = item.alt;
@@ -139,15 +161,25 @@ function openMediaLightbox(origin: HTMLElement) {
     setImage(nextImage, itemAt(activeIndex + 1));
     title.textContent = item.title;
     title.hidden = !item.title;
+    if (item.targetType && item.targetId) {
+      stage.dataset.doubletapHeartType = item.targetType;
+      stage.dataset.doubletapHeartId = item.targetId;
+    } else {
+      delete stage.dataset.doubletapHeartType;
+      delete stage.dataset.doubletapHeartId;
+    }
     count.textContent = items.length > 1 ? `${activeIndex + 1} / ${items.length}` : "";
     count.hidden = items.length < 2;
     previous.hidden = items.length < 2;
     next.hidden = items.length < 2;
     if (!options.keepTrack) resetTrack();
     if (items.length > 1) {
+      warmItemRoute(itemAt(activeIndex - 1));
+      warmItemRoute(itemAt(activeIndex + 1));
       const preload = new Image();
       preload.src = items[(activeIndex + 1) % items.length].src;
     }
+    warmItemRoute(item);
   };
 
   const close = () => {
@@ -237,7 +269,75 @@ function openMediaLightbox(origin: HTMLElement) {
   document.body.classList.add("media-lightbox-open");
   document.addEventListener("keydown", onKeydown);
   show(activeIndex);
+  bindDoubleTapHearts(overlay);
   overlay.focus();
+}
+
+function isModifiedClick(event: MouseEvent) {
+  return event.metaKey || event.ctrlKey || event.shiftKey || event.altKey || event.button !== 0;
+}
+
+function shouldIgnoreDoubleTap(event: MouseEvent) {
+  const target = event.target instanceof Element ? event.target : null;
+  return !!target?.closest("button, input, textarea, select, [data-heart-target-type]");
+}
+
+function sameTap(pending: PendingTap, event: MouseEvent) {
+  const dx = event.clientX - pending.x;
+  const dy = event.clientY - pending.y;
+  return performance.now() - pending.time <= DOUBLE_TAP_DELAY_MS && Math.hypot(dx, dy) <= DOUBLE_TAP_DISTANCE_PX;
+}
+
+function navigateAnchor(anchor: HTMLAnchorElement) {
+  const url = new URL(anchor.href);
+  if (url.origin === location.origin && !url.pathname.startsWith("/api/")) {
+    navigate(`${url.pathname}${url.search}${url.hash}`);
+    return;
+  }
+  window.location.href = anchor.href;
+}
+
+function runSingleTapAction(element: HTMLElement) {
+  if (element.matches("[data-lightbox-item]")) {
+    openMediaLightbox(element);
+    return;
+  }
+  const anchor = element instanceof HTMLAnchorElement ? element : element.closest<HTMLAnchorElement>("a[href]");
+  if (anchor) navigateAnchor(anchor);
+}
+
+function bindDoubleTapHearts(scope: ParentNode = document) {
+  scope.querySelectorAll<HTMLElement>("[data-doubletap-heart-type][data-doubletap-heart-id]").forEach((element) => {
+    if (element.dataset.doubletapHeartBound === "true") return;
+    element.dataset.doubletapHeartBound = "true";
+    element.addEventListener("click", (event) => {
+      if (!(event instanceof MouseEvent) || isModifiedClick(event) || shouldIgnoreDoubleTap(event)) return;
+      const targetType = element.dataset.doubletapHeartType || "";
+      const targetId = element.dataset.doubletapHeartId || "";
+      if (!targetType || !targetId) return;
+      const pending = pendingTaps.get(element);
+      event.preventDefault();
+      event.stopImmediatePropagation();
+      if (pending && sameTap(pending, event)) {
+        window.clearTimeout(pending.timer);
+        pendingTaps.delete(element);
+        void heartTarget(targetType, targetId, element, event);
+        return;
+      }
+      const timer = window.setTimeout(() => {
+        const current = pendingTaps.get(element);
+        if (current?.timer !== timer) return;
+        pendingTaps.delete(element);
+        runSingleTapAction(element);
+      }, DOUBLE_TAP_DELAY_MS);
+      pendingTaps.set(element, {
+        timer,
+        time: performance.now(),
+        x: event.clientX,
+        y: event.clientY,
+      });
+    }, true);
+  });
 }
 
 function bindMediaLightbox(scope: ParentNode = document) {
@@ -278,5 +378,6 @@ export function bindProtectedMedia(scope: ParentNode = document) {
       image.addEventListener("error", reveal, { once: true });
     }
   });
+  bindDoubleTapHearts(scope);
   bindMediaLightbox(scope);
 }

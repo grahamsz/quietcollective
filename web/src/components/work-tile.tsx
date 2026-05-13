@@ -60,6 +60,8 @@ export function WorkTile({ work, index = 0, galleryId = "" }: WorkTileProps) {
       class="image-tile media-reveal"
       data-link
       data-media-reveal
+      data-doubletap-heart-type="work"
+      data-doubletap-heart-id={work.id}
       style={tileRevealStyle(index)}
     >
       {imageUrl ? <ProtectedImage src={imageUrl} alt={work.title} /> : <span class="image-placeholder">{initials(work.title)}</span>}

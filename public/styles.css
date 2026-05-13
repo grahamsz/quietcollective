@@ -33,16 +33,38 @@
 
 html {
   min-height: 100%;
+  min-height: 100dvh;
   background: var(--paper);
 }
 
 body {
   min-height: 100vh;
+  min-height: 100dvh;
   margin: 0;
   background: var(--paper);
   color: var(--ink);
   font-size: 14px;
   line-height: 1.45;
+}
+
+.app-shell,
+.layout {
+  min-height: 100vh;
+  min-height: 100dvh;
+}
+
+@media (display-mode: standalone) {
+  body::after {
+    position: fixed;
+    z-index: 200;
+    right: 0;
+    bottom: 0;
+    left: 0;
+    height: max(2px, env(safe-area-inset-bottom));
+    background: var(--paper);
+    content: "";
+    pointer-events: none;
+  }
 }
 
 button,
@@ -91,13 +113,10 @@ img {
   max-width: 100%;
 }
 
-.app-shell {
-  min-height: 100vh;
-}
-
 .boot-screen {
   display: grid;
   min-height: 100vh;
+  min-height: 100dvh;
   place-content: center;
   gap: 14px;
   color: var(--muted);
@@ -130,7 +149,6 @@ img {
 
 .layout {
   display: grid;
-  min-height: 100vh;
   grid-template-columns: var(--sidebar) minmax(0, 1fr);
 }
 
@@ -1338,6 +1356,7 @@ body.media-lightbox-open {
 }
 
 .media-lightbox-stage {
+  position: relative;
   display: grid;
   width: 100%;
   height: 100%;
@@ -1418,6 +1437,66 @@ body.media-lightbox-open {
 
 [data-lightbox-item] .image-shield {
   cursor: zoom-in;
+}
+
+[data-doubletap-heart-type] {
+  touch-action: manipulation;
+}
+
+.doubletap-heart-burst {
+  position: absolute;
+  z-index: 9;
+  top: var(--heart-y, 50%);
+  left: var(--heart-x, 50%);
+  display: grid;
+  width: 76px;
+  height: 76px;
+  place-items: center;
+  color: var(--red);
+  filter: drop-shadow(0 8px 18px rgba(0, 0, 0, 0.52));
+  pointer-events: none;
+  transform: translate(-50%, -50%) scale(0.62);
+  animation: doubletap-heart-burst 0.74s cubic-bezier(0.18, 0.86, 0.28, 1) forwards;
+}
+
+.doubletap-heart-burst .icon {
+  width: 100%;
+  height: 100%;
+  fill: currentColor;
+  stroke: #ffffff;
+  stroke-width: 1.4;
+}
+
+.image-tile.is-doubletap-heart::after,
+.gallery-tile.is-doubletap-heart::after,
+.media-frame.is-doubletap-heart {
+  border-color: var(--red);
+}
+
+.media-lightbox-stage.is-doubletap-heart .media-lightbox-image {
+  border-color: rgba(255, 143, 130, 0.72);
+}
+
+@keyframes doubletap-heart-burst {
+  0% {
+    opacity: 0;
+    transform: translate(-50%, -50%) scale(0.42);
+  }
+
+  24% {
+    opacity: 1;
+    transform: translate(-50%, -50%) scale(1.04);
+  }
+
+  64% {
+    opacity: 0.92;
+    transform: translate(-50%, -66%) scale(0.96);
+  }
+
+  100% {
+    opacity: 0;
+    transform: translate(-50%, -92%) scale(0.72);
+  }
 }
 
 .add-menu-modal {

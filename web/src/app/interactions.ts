@@ -6,6 +6,7 @@ import { api, loadNotificationStatus } from "./api";
 import { field } from "./forms";
 import { navigate, renderRoute } from "./routing";
 import { disableBrowserNotifications, enableBrowserNotifications, notificationBrowserToggle, notificationMenuEmpty, notificationMenuLoading } from "./notifications";
+import { updateHeartControls } from "./reactions";
 import { toast } from "./toast";
 
 let notificationOutsideBound = false;
@@ -28,13 +29,7 @@ function bindReactionButtons() {
         const targetId = control.dataset.heartTargetId;
         const method = control.dataset.hearted === "true" ? "DELETE" : "POST";
         const data = await api(`/api/reactions/${encodePath(targetType)}/${encodePath(targetId)}/heart`, { method });
-        control.dataset.hearted = data.reactions.hearted_by_me ? "true" : "false";
-        control.classList.toggle("is-active", data.reactions.hearted_by_me);
-        const count = data.reactions.heart_count || 0;
-        const label = data.reactions.hearted_by_me ? "Remove heart" : "Heart";
-        control.setAttribute("aria-label", label);
-        control.setAttribute("title", label);
-        control.innerHTML = `${icon("heart")}${count ? `<span>${escapeHtml(String(count))}</span>` : ""}`;
+        updateHeartControls(targetType, targetId, data.reactions || {});
       } catch (error) {
         toast(error.message, "error");
       }

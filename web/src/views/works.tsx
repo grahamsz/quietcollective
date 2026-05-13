@@ -371,6 +371,8 @@ export function WorkDetailView({ id, work, gallery, commentsHtml, reactionButton
         alt: item.title || "",
         title: item.title || "",
         href: `/works/${item.id}${gallery?.id ? `?gallery=${encodePath(gallery.id)}` : ""}`,
+        targetType: "work",
+        targetId: item.id,
       } : null;
     })
     .filter(Boolean);
@@ -401,7 +403,11 @@ export function WorkDetailView({ id, work, gallery, commentsHtml, reactionButton
           data-lightbox-item="true"
           data-lightbox-src={version.preview_url}
           data-lightbox-title={work.title || undefined}
-          data-lightbox-href={`/works/${id}`}
+          data-lightbox-href={`/works/${id}${gallery?.id ? `?gallery=${encodePath(gallery.id)}` : ""}`}
+          data-lightbox-target-type="work"
+          data-lightbox-target-id={id}
+          data-doubletap-heart-type="work"
+          data-doubletap-heart-id={id}
           data-lightbox-items={JSON.stringify(lightboxItems)}
           data-lightbox-index={String(lightboxIndex)}
         >

@@ -22,11 +22,12 @@ import {
 } from "../app/core";
 import { bindCommentForm, bindVersionOverlay, highlightLinkedComment } from "../app/comments";
 import { addCollaborators, bindCollaboratorRows, collaboratorPayloads } from "../app/collaborators";
+import { loadWorkComments, loadWorkPayload } from "../app/work-prefetch";
 import { currentWorkGallery, workCrosspostGalleryModalView, workDetailView, workVersionsView } from "../views/islands";
 
 async function renderWork(id) {
   if (!(await ensureAuthed())) return;
-  const data = await api(`/api/works/${encodePath(id)}`);
+  const data = await loadWorkPayload(id);
   const work = data.work;
   if (work.capabilities?.edit || work.can_crosspost || work.can_create_version) await Promise.all([loadRoleSuggestions(), loadGalleries()]);
   const galleryId = new URLSearchParams(location.search).get("gallery") || "";
@@ -40,7 +41,7 @@ async function renderWork(id) {
   const crosspostOptions = work.can_crosspost
     ? state.galleries.filter((linkedGallery) => canCrosspostToGallery(linkedGallery) && !linkedIds.has(linkedGallery.id))
     : [];
-  const comments = await api(`/api/works/${encodePath(id)}/comments`).catch(() => ({ comments: [] }));
+  const comments = await loadWorkComments(id).catch(() => ({ comments: [] }));
   setApp(pageShell(workDetailView({
     id,
     work,

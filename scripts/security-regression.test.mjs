@@ -14,6 +14,8 @@ const activitySource = readFileSync("worker/src/activity.ts", "utf8");
 const apiCacheSource = readFileSync("worker/src/api-cache.ts", "utf8");
 const mediaSource = readFileSync("worker/src/media.ts", "utf8");
 const mediaComponentSource = readFileSync("web/src/components/media.ts", "utf8");
+const reactionsSource = readFileSync("web/src/app/reactions.ts", "utf8");
+const workPrefetchSource = readFileSync("web/src/app/work-prefetch.ts", "utf8");
 const workTileSource = readFileSync("web/src/components/work-tile.tsx", "utf8");
 const workViewSource = readFileSync("web/src/views/works.tsx", "utf8");
 const utilsSource = readFileSync("worker/src/utils.ts", "utf8");
@@ -411,13 +413,31 @@ test("protected media opens a swipeable gallery lightbox", () => {
   assert.match(mediaComponentSource, /navigate\(href\)/);
   assert.ok(mediaComponentSource.includes('overlay.querySelector("[data-lightbox-close]")?.addEventListener("click", closeToActiveWork);'));
   assert.doesNotMatch(mediaComponentSource, /Open work|data-lightbox-open-work/);
+  assert.match(mediaComponentSource, /function bindDoubleTapHearts/);
+  assert.match(mediaComponentSource, /DOUBLE_TAP_DELAY_MS/);
+  assert.match(mediaComponentSource, /heartTarget\(targetType, targetId, element, event\)/);
+  assert.match(mediaComponentSource, /warmWorkRoute\(item\.targetId\)/);
+  assert.match(reactionsSource, /method: "POST"/);
+  assert.match(reactionsSource, /doubletap-heart-burst/);
+  assert.match(reactionsSource, /updatePrefetchedWorkReactions\(targetId/);
+  assert.match(workPrefetchSource, /function warmWorkRoute/);
+  assert.match(workPrefetchSource, /loadWorkPayload/);
+  assert.match(workPrefetchSource, /loadWorkComments/);
+  assert.match(workTileSource, /data-doubletap-heart-type="work"/);
+  assert.match(workTileSource, /data-doubletap-heart-id=\{work\.id\}/);
   assert.doesNotMatch(workTileSource, /data-lightbox-item|data-lightbox-src|data-lightbox-gallery/);
   assert.match(workViewSource, /data-lightbox-item="true"/);
+  assert.match(workViewSource, /data-doubletap-heart-type="work"/);
+  assert.match(workViewSource, /data-lightbox-target-type="work"/);
+  assert.match(workViewSource, /targetType: "work"/);
   assert.match(workViewSource, /data-lightbox-items=\{JSON\.stringify\(lightboxItems\)\}/);
   assert.match(appSource, /lightboxWorks: galleryWorks\.length \? galleryWorks : \[work\]/);
+  assert.match(appSource, /loadWorkPayload\(id\)/);
+  assert.match(appSource, /loadWorkComments\(id\)/);
   assert.match(stylesSource, /media-lightbox-backdrop/);
   assert.match(stylesSource, /media-lightbox-track/);
   assert.match(stylesSource, /media-lightbox-nav/);
+  assert.match(stylesSource, /doubletap-heart-burst/);
   assert.match(stylesSource, /cursor: zoom-in/);
 });
 
@@ -575,6 +595,7 @@ test("human-readable API docs are published through worker routes", () => {
 
 test("PWA install icons use instance app icons when configured", () => {
   const index = readFileSync("public/index.html", "utf8");
+  assert.match(index, /viewport-fit=cover/);
   assert.match(index, /rel="manifest" href="\/manifest\.webmanifest"/);
   assert.match(index, /rel="icon" href="\/favicon\.ico" type="image\/png" sizes="32x32"/);
   assert.match(index, /rel="icon" href="\/favicon-32\.png" type="image\/png" sizes="32x32"/);
@@ -602,6 +623,9 @@ test("PWA install icons use instance app icons when configured", () => {
   assert.match(workerRoutes, /app_maskable_icon_192/);
   assert.match(workerRoutes, /app_maskable_icon/);
   assert.match(workerRoutes, /\$\{settingPrefix\}_updated_at/);
+  assert.match(stylesSource, /display-mode: standalone/);
+  assert.match(stylesSource, /safe-area-inset-bottom/);
+  assert.match(stylesSource, /min-height: 100dvh/);
 });
 
 test("public instance settings are cached outside per-key D1 reads", () => {
