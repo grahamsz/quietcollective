@@ -3,13 +3,21 @@ import { readFileSync } from "node:fs";
 
 const workerEntry = readFileSync("worker/src/index.ts", "utf8");
 const workerRoutes = readFileSync("worker/src/routes.ts", "utf8");
+const sessionsSource = readFileSync("worker/src/sessions.ts", "utf8");
 const workerConstants = readFileSync("worker/src/constants.ts", "utf8");
 const webPushSource = readFileSync("worker/src/web-push.ts", "utf8");
 const worker = `${workerEntry}\n${workerRoutes}\n${workerConstants}\n${webPushSource}`;
+const adminViewSource = readFileSync("web/src/views/admin.tsx", "utf8");
+const authViewSource = readFileSync("web/src/views/auth.tsx", "utf8");
+const authPageSource = readFileSync("web/src/pages/auth.ts", "utf8");
 const activitySource = readFileSync("worker/src/activity.ts", "utf8");
 const apiCacheSource = readFileSync("worker/src/api-cache.ts", "utf8");
 const mediaSource = readFileSync("worker/src/media.ts", "utf8");
+const mediaComponentSource = readFileSync("web/src/components/media.ts", "utf8");
+const workTileSource = readFileSync("web/src/components/work-tile.tsx", "utf8");
+const workViewSource = readFileSync("web/src/views/works.tsx", "utf8");
 const utilsSource = readFileSync("worker/src/utils.ts", "utf8");
+const stylesSource = readFileSync("public/styles.css", "utf8");
 const appSource = [
   "web/src/main.ts",
   "web/src/app/core.ts",
@@ -118,7 +126,9 @@ test("linked work collaborators are notified when added or updated", () => {
   assert.match(eventBlock, /You were added as a contributor/);
 
   const collaboratorBlock = routeBlock("async function createWorkCollaborator", 'app.post("/api/galleries/:galleryId/works"');
-  assert.match(collaboratorBlock, /insertEvent\(c\.env, "work\.collaborator_added"[\s\S]*user_id: linkedUserId/);
+  assert.match(collaboratorBlock, /insertWorkCollaboratorEvent\(c, "work\.collaborator_added", workId, id, linkedUserId\)/);
+  assert.match(collaboratorBlock, /insertWorkCollaboratorEvent\(c, "work\.collaborator_updated", workId, existingSameRole\.id, linkedUserId\)/);
+  assert.match(workerRoutes, /if \(linkedUserId && linkedUserId === actorId\) return/);
 });
 
 test("work collaborators can credit the same linked user for multiple roles", () => {
@@ -126,7 +136,7 @@ test("work collaborators can credit the same linked user for multiple roles", ()
   assert.match(createBlock, /lower\(role_label\) = lower\(\?\)/);
   assert.doesNotMatch(createBlock, /SELECT id FROM work_collaborators WHERE work_id = \? AND user_id = \?["`]/);
   assert.match(createBlock, /INSERT INTO work_collaborators/);
-  assert.match(createBlock, /insertEvent\(c\.env, "work\.collaborator_added"/);
+  assert.match(createBlock, /insertWorkCollaboratorEvent\(c, "work\.collaborator_added"/);
 
   const updateBlock = routeBlock('app.patch("/api/works/:id/collaborators/:collaboratorId"', 'app.delete("/api/works/:id/collaborators/:collaboratorId"');
   assert.match(updateBlock, /nextRoleLabel/);
@@ -154,8 +164,42 @@ test("notification polling does not update member activity", () => {
   assert.ok(block.indexOf("requestCountsAsActivity(c)") < block.indexOf("UPDATE users SET last_active_at"));
 });
 
+test("session cookies carry minimal signed auth claims and revalidate user rows periodically", () => {
+  assert.match(sessionsSource, /SESSION_CLAIMS_VERSION = 2/);
+  assert.match(sessionsSource, /SESSION_REVALIDATE_AFTER_SECONDS = 10 \* 60/);
+  assert.match(sessionsSource, /uid: user\.id/);
+  assert.match(sessionsSource, /role: user\.role/);
+  assert.match(sessionsSource, /pwd: user\.password_changed_at \|\| null/);
+  assert.match(sessionsSource, /fpc: user\.force_password_change_at \|\| null/);
+  assert.match(sessionsSource, /vat: options\.verifiedAt \|\| issuedAt/);
+  assert.doesNotMatch(sessionsSource, /email|handle|bio|avatar_key|profile_image_key/);
+  assert.match(sessionsSource, /parts\.length !== 4/);
+  assert.match(sessionsSource, /kind: "legacy"/);
+
+  const authBlock = sourceBlock(workerEntry, "async function requireUser", "function currentUser");
+  assert.match(authBlock, /readSession\(token, c\.env\)/);
+  assert.match(authBlock, /session\.kind === "legacy" \|\| session\.stale/);
+  assert.match(authBlock, /getSessionUserById\(c\.env\.DB, userId\)/);
+  assert.match(authBlock, /createSession\(user, c\.env, \{ expiresAt: session\.expiresAt \}\)/);
+  assert.match(authBlock, /sessionCookie\(refreshedToken, session\.expiresAt\)/);
+  assert.match(authBlock, /userFromSessionClaims\(session\.claims\)/);
+  assert.doesNotMatch(authBlock, /getUserById\(c\.env\.DB, userId\)/);
+
+  const sessionQuery = sourceBlock(workerEntry, "async function getSessionUserById", "async function getUserByHandle");
+  assert.match(sessionQuery, /SELECT id, role, disabled_at, password_changed_at, force_password_change_at, last_active_at/);
+  assert.doesNotMatch(sessionQuery, /SELECT \*/);
+
+  const authMe = routeBlock('app.get("/api/auth/me"', 'app.patch("/api/auth/password"');
+  assert.match(authMe, /fullCurrentUser\(c\)/);
+
+  const galleries = routeBlock('app.get("/api/galleries"', 'app.post("/api/galleries/:id/pin"');
+  assert.doesNotMatch(galleries, /fullCurrentUser|getUserById/);
+});
+
 test("activity and mention notifications stay scoped to visible content", () => {
   const joinedVisibility = sourceBlock(activitySource, "export function joinedEventVisible", "function fallbackThumbnailUrl");
+  assert.match(joinedVisibility, /row\.type === "rules\.published" \|\| row\.type === "rules\.accepted"\) return false/);
+  assert.match(joinedVisibility, /selfTargetedContributorEvent\(user, row\)/);
   assert.match(joinedVisibility, /row\.subject_type === "user"\) return row\.type === "user\.joined"/);
   assert.doesNotMatch(joinedVisibility, /row\.subject_type === "user" \|\| row\.subject_type === "profile"/);
 
@@ -163,13 +207,39 @@ test("activity and mention notifications stay scoped to visible content", () => 
   assert.match(workerEntry, /async function canUserViewTarget/);
   assert.match(eventBlock, /canUserViewTarget\(env\.DB, row\.id, event\.target_type, event\.target_id\)/);
   assert.doesNotMatch(eventBlock, /for \(const row of mentioned\.results\) targets\.add\(row\.id\)/);
+
+  const activityRoute = routeBlock('app.get("/api/activity"', 'app.get("/api/notifications"');
+  assert.match(activityRoute, /type NOT IN \('rules\.published', 'rules\.accepted'\)/);
 });
 
-test("private media stays permission-gated and signed media validates HMAC payloads", () => {
+test("private media stays permission-gated and signed media uses direct R2 URLs when configured", () => {
   const signed = routeBlock('app.get("/api/media/signed/:token"', 'app.use("/api/admin/*"');
   assert.match(signed, /readSignedMediaPayload\(c\.env, c\.req\.param\("token"\)\)/);
   assert.match(signed, /if \(!payload\) return c\.json\(\{ error: "Forbidden" \}, 403\)/);
   assert.ok(worker.indexOf('app.get("/api/media/signed/:token"') < worker.indexOf('app.use("/api/media/*", requireUser)'));
+
+  const mediaUrl = sourceBlock(mediaSource, "export async function r2PresignedGetUrl", "export async function signedAppMediaUrl");
+  assert.match(mediaUrl, /R2_ACCOUNT_ID/);
+  assert.match(mediaUrl, /R2_ACCESS_KEY_ID/);
+  assert.match(mediaUrl, /R2_SECRET_ACCESS_KEY/);
+  assert.match(mediaUrl, /R2_BUCKET_NAME/);
+  assert.match(mediaSource, /AWS4-HMAC-SHA256/);
+  assert.match(mediaUrl, /UNSIGNED-PAYLOAD/);
+  assert.match(mediaUrl, /X-Amz-Expires/);
+  assert.match(mediaSource, /r2\.cloudflarestorage\.com/);
+
+  const mediaDispatch = sourceBlock(mediaSource, "export async function signedMediaUrl", "export async function readSignedMediaPayload");
+  assert.match(mediaDispatch, /r2PresignedGetUrl\(env, key, contentType, variant, filename\)/);
+  assert.match(mediaDispatch, /signedAppMediaUrl\(env, key, contentType, variant, filename\)/);
+
+  assert.match(workerRoutes, /async function directR2MediaRedirect/);
+  assert.match(workerRoutes, /c\.redirect\(url, 302\)/);
+  const signedRoute = routeBlock('app.get("/api/media/signed/:token"', 'app.use("/api/admin/*"');
+  assert.match(signedRoute, /directR2MediaRedirect\(c, payload\.key, payload\.content_type, payload\.variant, payload\.filename\)/);
+  const routedWorkMedia = routeBlock('app.get("/api/media/works/:workId/versions/:versionId/:variant"', 'app.all("/api/*"');
+  assert.ok(routedWorkMedia.indexOf("assertWorkCapability") < routedWorkMedia.indexOf("directR2MediaRedirect"));
+  const routedMarkdownMedia = routeBlock('app.get("/api/media/markdown-assets/:id/:variant"', 'app.get("/api/media/works/:workId/versions/:versionId/:variant"');
+  assert.ok(routedMarkdownMedia.indexOf("canViewTarget") < routedMarkdownMedia.indexOf("directR2MediaRedirect"));
 
   const media = sourceBlock(mediaSource, "export async function readSignedMediaPayload", undefined);
   assert.match(media, /sign\(data, secret\) !== signature/);
@@ -190,6 +260,21 @@ test("cacheable gallery and feed APIs use ETags before expensive reads", () => {
   assert.match(middleware, /bumpApiCacheToken\(c\.env\.DB\)/);
   assert.match(middleware, /!c\.res\.headers\.has\("Cache-Control"\)/);
 
+  const authMe = routeBlock('app.get("/api/auth/me"', 'app.patch("/api/auth/password"');
+  assert.ok(authMe.indexOf("prepareApiCache") < authMe.indexOf("fullCurrentUser"));
+  assert.match(authMe, /apiNotModified\(cache\)/);
+  assert.match(authMe, /cacheableJson\(c, cache, \{/);
+
+  const members = routeBlock('app.get("/api/members"', 'app.get("/api/users/:handle"');
+  assert.ok(members.indexOf("prepareApiCache") < members.indexOf("SELECT * FROM users WHERE disabled_at IS NULL"));
+  assert.match(members, /apiNotModified\(cache\)/);
+  assert.match(members, /cacheableJson\(c, cache, \{ members \}\)/);
+
+  const userProfile = routeBlock('app.get("/api/users/:handle"', 'app.patch("/api/users/me"');
+  assert.ok(userProfile.indexOf("prepareApiCache") < userProfile.indexOf("SELECT * FROM users WHERE handle = ?"));
+  assert.match(userProfile, /apiNotModified\(cache\)/);
+  assert.match(userProfile, /cacheableJson\(c, cache, \{ user:/);
+
   const galleries = routeBlock('app.get("/api/galleries"', 'app.post("/api/galleries/:id/pin"');
   assert.ok(galleries.indexOf("prepareApiCache") < galleries.indexOf("SELECT * FROM galleries ORDER BY updated_at DESC"));
   assert.match(galleries, /apiNotModified\(cache\)/);
@@ -204,6 +289,11 @@ test("cacheable gallery and feed APIs use ETags before expensive reads", () => {
   assert.ok(comments.indexOf("prepareApiCache") < comments.indexOf("SELECT comments.*, users.display_name"));
   assert.match(comments, /cacheableJson\(c, cache, \{ comments \}\)/);
 
+  const workComments = routeBlock('app.get("/api/works/:id/comments"', 'app.patch("/api/works/:id"');
+  assert.ok(workComments.indexOf("prepareApiCache") < workComments.indexOf("SELECT comments.*, users.display_name"));
+  assert.match(workComments, /apiNotModified\(cache\)/);
+  assert.match(workComments, /cacheableJson\(c, cache, \{ comments \}\)/);
+
   const activity = routeBlock('app.get("/api/activity"', 'app.get("/api/notifications"');
   assert.ok(activity.indexOf("prepareApiCache") < activity.indexOf("WITH recent AS"));
   assert.match(activity, /cacheableJson\(c, cache, \{ events \}\)/);
@@ -214,6 +304,10 @@ test("cacheable gallery and feed APIs use ETags before expensive reads", () => {
 
   const clientCache = appSource.slice(appSource.indexOf("function isCacheableApiRequest"), appSource.indexOf("async function api"));
   assert.match(clientCache, /API_JSON_CACHEABLE_PATHS/);
+  assert.ok(appSource.includes('/^\\/api\\/auth\\/me$/'));
+  assert.ok(appSource.includes('/^\\/api\\/members$/'));
+  assert.ok(appSource.includes('/^\\/api\\/users\\/[^/?]+$/'));
+  assert.ok(appSource.includes('/^\\/api\\/works\\/[^/?]+\\/comments$/'));
   assert.doesNotMatch(clientCache, /state\.me/);
 });
 
@@ -297,6 +391,34 @@ test("markdown editor preview can be toggled off", () => {
   assert.match(appSource, /markdownAssetVariantUrl\(url, "thumbnail"\)/);
   assert.match(appSource, /function insertMarkdownImage/);
   assert.match(appSource, /cm\.setCursor\(cm\.posFromIndex\(startIndex \+ markdown\.length\)\)/);
+});
+
+test("protected media opens a swipeable gallery lightbox", () => {
+  assert.match(mediaComponentSource, /function openMediaLightbox/);
+  assert.match(mediaComponentSource, /data-lightbox-item/);
+  assert.match(mediaComponentSource, /parsedLightboxItems/);
+  assert.match(mediaComponentSource, /dataset\.lightboxGallery/);
+  assert.match(mediaComponentSource, /target\?\.closest\("\[data-media-protect\], \[data-protected-image\]"\)/);
+  assert.match(mediaComponentSource, /event\.preventDefault\(\)/);
+  assert.match(mediaComponentSource, /event\.stopPropagation\(\)/);
+  assert.match(mediaComponentSource, /pointerdown/);
+  assert.match(mediaComponentSource, /pointermove/);
+  assert.match(mediaComponentSource, /pointerup/);
+  assert.match(mediaComponentSource, /setTrackOffset\(dragOffset, false\)/);
+  assert.match(mediaComponentSource, /ArrowLeft/);
+  assert.match(mediaComponentSource, /ArrowRight/);
+  assert.match(mediaComponentSource, /const closeToActiveWork = \(\) =>/);
+  assert.match(mediaComponentSource, /navigate\(href\)/);
+  assert.ok(mediaComponentSource.includes('overlay.querySelector("[data-lightbox-close]")?.addEventListener("click", closeToActiveWork);'));
+  assert.doesNotMatch(mediaComponentSource, /Open work|data-lightbox-open-work/);
+  assert.doesNotMatch(workTileSource, /data-lightbox-item|data-lightbox-src|data-lightbox-gallery/);
+  assert.match(workViewSource, /data-lightbox-item="true"/);
+  assert.match(workViewSource, /data-lightbox-items=\{JSON\.stringify\(lightboxItems\)\}/);
+  assert.match(appSource, /lightboxWorks: galleryWorks\.length \? galleryWorks : \[work\]/);
+  assert.match(stylesSource, /media-lightbox-backdrop/);
+  assert.match(stylesSource, /media-lightbox-track/);
+  assert.match(stylesSource, /media-lightbox-nav/);
+  assert.match(stylesSource, /cursor: zoom-in/);
 });
 
 test("gallery comments and gallery reactions produce targetable notifications", () => {
@@ -438,6 +560,7 @@ test("service worker does not cache API responses or original media", () => {
   assert.match(serviceWorker, /pathname\.startsWith\("\/api\/"\)/);
   assert.match(serviceWorker, /pathname\.includes\("\/original"\)/);
   assert.match(serviceWorker, /pathname\.includes\("high-resolution"\)/);
+  assert.doesNotMatch(serviceWorker, /MANIFEST_URL|\/manifest\.webmanifest\?v=/);
 });
 
 test("human-readable API docs are published through worker routes", () => {
@@ -450,10 +573,101 @@ test("human-readable API docs are published through worker routes", () => {
   assert.match(workerRoutes, /app\.get\("\/developers\/api"[\s\S]*\/developers\/[\s\S]*text\/html; charset=utf-8/);
 });
 
-test("wrangler config keeps R2 private by serving assets through the Worker API only", () => {
+test("PWA install icons use instance app icons when configured", () => {
+  const index = readFileSync("public/index.html", "utf8");
+  assert.match(index, /rel="manifest" href="\/manifest\.webmanifest"/);
+  assert.match(index, /rel="icon" href="\/favicon\.ico" type="image\/png" sizes="32x32"/);
+  assert.match(index, /rel="icon" href="\/favicon-32\.png" type="image\/png" sizes="32x32"/);
+  assert.match(index, /rel="icon" href="\/favicon-16\.png" type="image\/png" sizes="16x16"/);
+  assert.match(index, /rel="icon" href="\/icon-192\.png" type="image\/png" sizes="192x192"/);
+  assert.doesNotMatch(index, /alternate icon/);
+  assert.match(index, /rel="apple-touch-icon" href="\/apple-touch-icon\.png"/);
+  assert.match(workerRoutes, /app\.get\("\/favicon\.ico"[\s\S]*serveInstanceAppIcon\(c, "any", "\/icon-192\.png", "32"\)/);
+  assert.match(workerRoutes, /app\.get\("\/favicon-16\.png"[\s\S]*serveInstanceAppIcon\(c, "any", "\/icon-192\.png", "16"\)/);
+  assert.match(workerRoutes, /app\.get\("\/favicon-32\.png"[\s\S]*serveInstanceAppIcon\(c, "any", "\/icon-192\.png", "32"\)/);
+  assert.match(workerRoutes, /app\.get\("\/apple-touch-icon\.png"[\s\S]*serveInstanceAppIcon\(c, "any", "\/icon-192\.png", "192"\)/);
+  assert.match(workerRoutes, /app\.get\("\/icon-192\.png"[\s\S]*serveInstanceAppIcon\(c, "any", "\/icon-192\.png", "192"\)/);
+  assert.match(workerRoutes, /app\.get\("\/icon-512\.png"[\s\S]*serveInstanceAppIcon\(c, "any", "\/icon-512\.png", "512"\)/);
+  assert.match(workerRoutes, /app\.get\("\/icon-maskable-192\.png"[\s\S]*serveInstanceAppIcon\(c, "maskable", "\/icon-maskable-192\.png", "192"\)/);
+  assert.match(workerRoutes, /app\.get\("\/icon-maskable-512\.png"[\s\S]*serveInstanceAppIcon\(c, "maskable", "\/icon-maskable-512\.png", "512"\)/);
+  assert.match(workerRoutes, /app\.get\("\/api\/instance\/app-icon\/:kind\/:size"[\s\S]*serveInstanceAppIcon\(c, kind, undefined, size\)/);
+  assert.match(workerRoutes, /app\.get\("\/api\/instance\/app-icon\/:kind"[\s\S]*serveInstanceAppIcon\(c, kind\)/);
+  assert.match(workerRoutes, /application\/manifest\+json; charset=utf-8/);
+  assert.match(workerRoutes, /src: "\/icon-maskable-192\.png"[\s\S]*purpose: "maskable"/);
+  assert.match(workerRoutes, /src: "\/icon-192\.png"[\s\S]*purpose: "any"/);
+  assert.doesNotMatch(workerRoutes, /src: "\/icon\.svg"[\s\S]*purpose: "any"/);
+  assert.match(workerRoutes, /app_icon_16/);
+  assert.match(workerRoutes, /app_icon_32/);
+  assert.match(workerRoutes, /app_icon_192/);
+  assert.match(workerRoutes, /app_maskable_icon_192/);
+  assert.match(workerRoutes, /app_maskable_icon/);
+  assert.match(workerRoutes, /\$\{settingPrefix\}_updated_at/);
+});
+
+test("public instance settings are cached outside per-key D1 reads", () => {
+  assert.match(workerEntry, /PUBLIC_INSTANCE_SETTINGS_CACHE_KEY = "instance:public-settings:v1"/);
+  assert.match(workerEntry, /PUBLIC_INSTANCE_SETTINGS_CACHE_VERSION = 3/);
+  assert.match(workerEntry, /"site_url"/);
+  assert.match(workerEntry, /site_url: valueFromSettings\(values, "site_url", env\.SITE_URL \|\| ""\)/);
+  assert.match(workerEntry, /SETTINGS_CACHE/);
+  assert.match(workerEntry, /SELECT key, value_json FROM instance_settings WHERE key IN/);
+  assert.match(workerEntry, /\.get<PublicInstanceSettings>\(PUBLIC_INSTANCE_SETTINGS_CACHE_KEY, \{ type: "json", cacheTtl: 60 \}\)/);
+  assert.match(workerEntry, /\.put\(PUBLIC_INSTANCE_SETTINGS_CACHE_KEY, JSON\.stringify\(settings\)\)/);
+  assert.match(workerRoutes, /refreshPublicInstanceSettings\(c\.env\)/);
+  const manifestBlock = routeBlock('app.get("/manifest.webmanifest"', 'app.get("/api/setup/status"');
+  assert.doesNotMatch(manifestBlock, /getSetting\(c\.env\.DB/);
+  const iconBlock = sourceBlock(workerRoutes, 'async function serveInstanceAppIcon', 'async function storeInstanceAppIcon');
+  assert.doesNotMatch(iconBlock, /getSetting\(c\.env\.DB/);
+});
+
+test("admin-configured site URL is used for generated external links", () => {
+  assert.match(adminViewSource, /<label>Site URL<\/label><input name="site_url" type="url"/);
+  assert.match(workerRoutes, /function normalizeSiteUrl/);
+  assert.match(workerRoutes, /async function siteOrigin/);
+  assert.match(workerRoutes, /getSetting\(c\.env\.DB, "site_url", c\.env\.SITE_URL \|\| ""\)/);
+  assert.match(workerRoutes, /await setSetting\(c\.env\.DB, "site_url", siteUrl/);
+  assert.match(workerRoutes, /Site URL must be a valid http or https URL/);
+  assert.match(workerRoutes, /reset_url: await absoluteUrl\(c, `\/reset-password\/\$\{token\}`\)/);
+  assert.match(workerRoutes, /const inviteUrl = await absoluteUrl\(c, `\/invite\/\$\{token\}`\)/);
+  assert.match(workerRoutes, /absolute_url: token \? await absoluteUrl\(c, `\/invite\/\$\{token\}`\) : null/);
+  assert.doesNotMatch(workerRoutes, /reset_url: absoluteUrl/);
+  assert.doesNotMatch(workerRoutes, /const inviteUrl = absoluteUrl/);
+});
+
+test("server rules render from markdown and expose acceptance status", () => {
+  assert.match(workerRoutes, /current_rule_published_at: rules\.current\?\.published_at \|\| null/);
+  assert.match(appSource, /const rules = state\.me\?\.current_rule_version_id/);
+  assert.match(appSource, /\$\{source\}\s*\$\{rules\}/);
+  assert.match(appSource, /href="\/rules\/accept"/);
+  assert.doesNotMatch(appSource, /rulesFooterStatus|sidebar-rules-status|current_rule_published_at|current_rule_accepted_at|<strong>Server Rules/);
+  assert.match(appSource, /const heading = line\.match/);
+  assert.match(appSource, /<blockquote>/);
+  assert.match(appSource, /<hr>/);
+  assert.match(authViewSource, /renderMarkdown\(current\.body_markdown \|\| current\.body_html\)/);
+  assert.match(authViewSource, /renderMarkdown\(previous\.body_markdown \|\| previous\.body_html\)/);
+  assert.doesNotMatch(authViewSource, /current\.body_html \|\| renderMarkdown/);
+  assert.match(authViewSource, /You agreed to this version/);
+  assert.match(authPageSource, /if \(!rules\.required\) return/);
+  assert.doesNotMatch(authPageSource, /if \(!rules\.required\) \{\s*navigate\("\/"\)/);
+  assert.match(adminViewSource, /renderMarkdown\(rule\.body_markdown \|\| rule\.body_html\)/);
+});
+
+test("wrangler config keeps R2 private and omits S3 signing secrets", () => {
   const config = JSON.parse(wrangler.replace(/\/\/.*$/gm, ""));
   assert.equal(config.r2_buckets[0].bucket_name, "quietcollective-media");
+  assert.equal(config.vars.R2_BUCKET_NAME, "quietcollective-media");
+  assert.equal(config.vars.R2_ACCOUNT_ID, "");
+  assert.ok(!("R2_ACCESS_KEY_ID" in config.vars));
+  assert.ok(!("R2_SECRET_ACCESS_KEY" in config.vars));
   assert.ok(config.assets.run_worker_first.includes("/api/*"));
+  assert.ok(config.assets.run_worker_first.includes("/favicon.ico"));
+  assert.ok(config.assets.run_worker_first.includes("/favicon-16.png"));
+  assert.ok(config.assets.run_worker_first.includes("/favicon-32.png"));
+  assert.ok(config.assets.run_worker_first.includes("/apple-touch-icon.png"));
+  assert.ok(config.assets.run_worker_first.includes("/icon-192.png"));
+  assert.ok(config.assets.run_worker_first.includes("/icon-512.png"));
+  assert.ok(config.assets.run_worker_first.includes("/icon-maskable-192.png"));
+  assert.ok(config.assets.run_worker_first.includes("/icon-maskable-512.png"));
   assert.ok(config.assets.run_worker_first.includes("/developers*"));
   assert.ok(config.assets.run_worker_first.includes("/manifest.webmanifest"));
 });

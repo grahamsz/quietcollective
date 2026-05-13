@@ -13,6 +13,7 @@ import {
   loadRoleSuggestions,
   mountComponentIslands,
   navigate,
+  newestFirst,
   pageShell,
   renderRoute,
   setApp,
@@ -30,6 +31,11 @@ async function renderWork(id) {
   if (work.capabilities?.edit || work.can_crosspost || work.can_create_version) await Promise.all([loadRoleSuggestions(), loadGalleries()]);
   const galleryId = new URLSearchParams(location.search).get("gallery") || "";
   const gallery = currentWorkGallery(work, galleryId);
+  const galleryWorks = gallery?.id
+    ? ((await api(`/api/galleries/${encodePath(gallery.id)}`).catch(() => null))?.works || [])
+      .filter((item) => !item.deleted_at)
+      .sort(newestFirst)
+    : [];
   const linkedIds = new Set((work.galleries || []).map((linkedGallery) => linkedGallery.id));
   const crosspostOptions = work.can_crosspost
     ? state.galleries.filter((linkedGallery) => canCrosspostToGallery(linkedGallery) && !linkedIds.has(linkedGallery.id))
@@ -43,6 +49,7 @@ async function renderWork(id) {
     versions: data.versions || [],
     collaborators: data.collaborators || [],
     crosspostOptions,
+    lightboxWorks: galleryWorks.length ? galleryWorks : [work],
   })));
   bindCommentForm("work", id);
   bindVersionOverlay(data.versions || []);

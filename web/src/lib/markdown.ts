@@ -59,9 +59,25 @@ export function renderMarkdown(value: unknown) {
   for (const line of lines) {
     const unordered = line.match(/^\s*[-*+]\s+(.+)$/);
     const ordered = line.match(/^\s*\d+[.)]\s+(.+)$/);
+    const heading = line.match(/^(#{1,3})\s+(.+)$/);
+    const quote = line.match(/^>\s?(.+)$/);
+    const rule = line.match(/^\s*([-*_])(?:\s*\1){2,}\s*$/);
     if (!line.trim()) {
       flushParagraph();
       flushList();
+    } else if (heading) {
+      flushParagraph();
+      flushList();
+      const level = heading[1].length;
+      blocks.push(`<h${level}>${renderMarkdownInline(heading[2])}</h${level}>`);
+    } else if (quote) {
+      flushParagraph();
+      flushList();
+      blocks.push(`<blockquote>${renderMarkdownInline(quote[1])}</blockquote>`);
+    } else if (rule) {
+      flushParagraph();
+      flushList();
+      blocks.push("<hr>");
     } else if (unordered || ordered) {
       const type: MarkdownList["type"] = unordered ? "ul" : "ol";
       const item = (unordered || ordered)?.[1] || "";

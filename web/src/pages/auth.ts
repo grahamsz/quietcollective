@@ -110,11 +110,8 @@ async function renderRulesAccept() {
     return;
   }
   const rules = await api("/api/rules/current");
-  if (!rules.required) {
-    navigate("/");
-    return;
-  }
   setApp(pageShell(rulesAcceptView(rules)));
+  if (!rules.required) return;
   bindJsonForm("#rules-accept-form", async () => {
     await api("/api/rules/accept", { method: "POST", body: { accept: true } });
     await refreshMe();

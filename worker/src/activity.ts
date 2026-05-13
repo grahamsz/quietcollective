@@ -1,6 +1,8 @@
-import type { AppUser, Env } from "./types";
+import type { AuthenticatedUser, Env } from "./types";
 import { signedMediaUrl } from "./media";
 import { extractMentions, parseJson, stripMarkdownImages } from "./utils";
+
+type ActivityUser = AuthenticatedUser & { handle?: string | null };
 
 export type ActivityRow = {
   id: string;
@@ -153,7 +155,7 @@ function placeholders(ids: string[]) {
   return ids.map(() => "?").join(",");
 }
 
-export async function visibleGalleryIds(db: D1Database, user: AppUser, ids: Set<string>) {
+export async function visibleGalleryIds(db: D1Database, user: AuthenticatedUser, ids: Set<string>) {
   const values = [...ids];
   if (!values.length) return new Set<string>();
   const marker = placeholders(values);
@@ -175,7 +177,7 @@ export async function visibleGalleryIds(db: D1Database, user: AppUser, ids: Set<
   return new Set(rows.results.map((row) => row.id));
 }
 
-export async function visibleWorkIds(db: D1Database, user: AppUser, ids: Set<string>) {
+export async function visibleWorkIds(db: D1Database, user: AuthenticatedUser, ids: Set<string>) {
   const values = [...ids];
   if (!values.length) return new Set<string>();
   const marker = placeholders(values);
@@ -235,8 +237,16 @@ function targetVisible(row: ActivityJoinedRow, visibleGalleries: Set<string>, vi
   return false;
 }
 
-export function joinedEventVisible(user: AppUser, row: ActivityJoinedRow, visibleGalleries: Set<string>, visibleWorks: Set<string>) {
-  if (row.type === "rules.published" || row.type === "rules.accepted") return true;
+function selfTargetedContributorEvent(user: AuthenticatedUser, row: ActivityJoinedRow) {
+  if (row.type !== "work.collaborator_added" && row.type !== "work.collaborator_updated") return false;
+  if (row.actor_id !== user.id) return false;
+  const payload = parseJson<Record<string, unknown>>(row.payload_json || "", {});
+  return payload.user_id === user.id;
+}
+
+export function joinedEventVisible(user: AuthenticatedUser, row: ActivityJoinedRow, visibleGalleries: Set<string>, visibleWorks: Set<string>) {
+  if (row.type === "rules.published" || row.type === "rules.accepted") return false;
+  if (selfTargetedContributorEvent(user, row)) return false;
   if (row.subject_type === "user") return row.type === "user.joined";
   if (row.subject_type === "profile") return true;
   if (row.subject_type === "gallery") return visibleGalleries.has(row.subject_id);
@@ -268,7 +278,7 @@ async function activityThumbnailUrl(
 
 export async function activityEntryFromJoinedRow(
   env: Env,
-  user: AppUser,
+  user: ActivityUser,
   row: ActivityJoinedRow,
   thumbnailCache: Map<string, Promise<string | null>>,
 ) {
@@ -307,12 +317,12 @@ export async function activityEntryFromJoinedRow(
     }
     if (row.type === "work.version_created") summary = `${actorLabel} updated work "${workTitle}"`;
     if (row.type === "work.feedback_requested") summary = `${actorLabel} requested feedback on "${workTitle}"`;
-    if (row.type === "work.collaborator_added") summary = `${actorLabel} added you as a contributor on "${workTitle}"`;
-    if (row.type === "work.collaborator_updated") summary = `${actorLabel} updated your contributor credit on "${workTitle}"`;
+    if (row.type === "work.collaborator_added") summary = payload.user_id === user.id ? `${actorLabel} added you as a contributor on "${workTitle}"` : `${actorLabel} added a contributor on "${workTitle}"`;
+    if (row.type === "work.collaborator_updated") summary = payload.user_id === user.id ? `${actorLabel} updated your contributor credit on "${workTitle}"` : `${actorLabel} updated a contributor credit on "${workTitle}"`;
   } else if (row.type === "comment.created" || row.type === "comment.replied") {
     const body = typeof payload.body === "string" ? payload.body : "";
     comment_preview = stripMarkdownImages(body).slice(0, 360);
-    const mentionedYou = extractMentions(body).includes(user.handle.toLowerCase());
+    const mentionedYou = typeof user.handle === "string" && extractMentions(body).includes(user.handle.toLowerCase());
     if (row.target_type === "work" && row.target_work_id) {
       href = `/works/${row.target_work_id}#comment-${encodeURIComponent(row.subject_id)}`;
       thumbnail_url = await activityThumbnailUrl(env, thumbnailCache, row.target_work_thumb_key, row.target_work_thumb_type, row.target_work_id, row.target_work_thumb_version_id);

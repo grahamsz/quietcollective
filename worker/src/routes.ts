@@ -23,7 +23,7 @@ import {
 import { apiNotModified, bumpApiCacheToken, cacheableJson, etagMatches, mutatingApiRequest, sanitizeEtagPart } from "./api-cache";
 import { base64Url, decryptString, encryptString, getSecret, sha256 } from "./crypto";
 import { sendEmail, smtpConfigured, type SmtpConfig } from "./email";
-import { readSignedMediaPayload, signedMediaUrl } from "./media";
+import { r2PresignedGetUrl, readSignedMediaPayload, signedMediaUrl } from "./media";
 import { createSession, expiredSessionCookie, sessionCookie } from "./sessions";
 import { webPushConfigured } from "./web-push";
 import type { AppContext, Ctx } from "./app-context";
@@ -38,7 +38,7 @@ import {
   POPULAR_TAG_WINDOW_DAYS,
   ROLE_SUGGESTIONS,
 } from "./constants";
-import type { AppUser, Env, GalleryRow, WorkRow, WorkVersionRow } from "./types";
+import type { AppUser, AuthenticatedUser, Env, GalleryRow, WorkRow, WorkVersionRow } from "./types";
 import { cacheControl, fileField, jsonText, normalizeClientUploadKey, normalizeGalleryOwnership, normalizeHandle, normalizeRoleLabel, normalizeTag, now, numberField, parseJson, recordTagUse, recordTextTags, stringField, truthy } from "./utils";
 import type { RouteApp, RouteDeps } from "./routes/types";
 
@@ -83,7 +83,7 @@ let feedbackCleanupCheckedAt = 0;
 const FEEDBACK_CLEANUP_INTERVAL_MS = 5 * 60 * 1000;
 
 export function registerRoutes(app: RouteApp, deps: RouteDeps) {
-  const { prepareApiCache, readBody, getUserById, getUserByHandle, requireUser, currentUser, publicUser, getTags, getSetting, setSetting, instanceInfo, adminCount, isAdmin, galleryCapabilities, getWork, workGalleryLinks, workCapabilities, galleryVisibilityRank, workVisibilityRank, assertGalleryCapability, assertGalleryCrosspostTarget, assertWorkCapability, assertWorkCrosspostCapability, canViewTarget, canCommentTarget, insertEvent, processEvent, serializeGallery, reactionSummary, serializeWork, serializeVersion, serializeGalleryWorkListItem, putR2File, ensureWorkRoleSuggestion } = deps;
+  const { prepareApiCache, readBody, getUserById, getUserByHandle, requireUser, currentUser, fullCurrentUser, publicUser, getTags, getSetting, setSetting, publicInstanceSettings, refreshPublicInstanceSettings, instanceInfo, adminCount, isAdmin, galleryCapabilities, getWork, workGalleryLinks, workCapabilities, galleryVisibilityRank, workVisibilityRank, assertGalleryCapability, assertGalleryCrosspostTarget, assertWorkCapability, assertWorkCrosspostCapability, canViewTarget, canCommentTarget, insertEvent, processEvent, serializeGallery, reactionSummary, serializeWork, serializeVersion, serializeGalleryWorkListItem, putR2File, ensureWorkRoleSuggestion } = deps;
 
 type RuleVersionRow = {
   id: string;
@@ -146,9 +146,30 @@ function settingRowsToValues(rows: Array<{ key: string; value_json: string }>) {
   return values;
 }
 
-function absoluteUrl(c: Ctx, path: string) {
+function normalizeSiteUrl(value: string) {
+  const raw = value.trim();
+  if (!raw) return "";
+  try {
+    const url = new URL(raw);
+    if (url.protocol !== "http:" && url.protocol !== "https:") return "";
+    url.hash = "";
+    url.search = "";
+    return url.toString().replace(/\/+$/, "");
+  } catch {
+    return "";
+  }
+}
+
+async function siteOrigin(c: Ctx) {
+  const configured = normalizeSiteUrl(await getSetting(c.env.DB, "site_url", c.env.SITE_URL || ""));
+  if (configured) return configured;
   const url = new URL(c.req.url);
-  return `${url.origin}${path.startsWith("/") ? path : `/${path}`}`;
+  return url.origin;
+}
+
+async function absoluteUrl(c: Ctx, path: string) {
+  const origin = await siteOrigin(c);
+  return `${origin}${path.startsWith("/") ? path : `/${path}`}`;
 }
 
 function applyTemplate(template: string, values: Record<string, string>) {
@@ -164,7 +185,7 @@ function colorField(value: unknown, fallback: string) {
   return /^#[0-9a-f]{6}$/i.test(color) ? color : fallback;
 }
 
-function passwordChangeRequired(user: AppUser) {
+function passwordChangeRequired(user: AuthenticatedUser) {
   if (!user.force_password_change_at) return false;
   if (!user.password_changed_at) return true;
   return Date.parse(user.password_changed_at) < Date.parse(user.force_password_change_at);
@@ -181,7 +202,7 @@ async function currentRuleVersion(db: D1Database) {
   ).first<RuleVersionRow>();
 }
 
-async function ruleAcceptanceStatus(db: D1Database, user: AppUser) {
+async function ruleAcceptanceStatus(db: D1Database, user: AuthenticatedUser) {
   const current = await currentRuleVersion(db);
   const accepted = current
     ? await db.prepare("SELECT accepted_at FROM rule_acceptances WHERE rule_version_id = ? AND user_id = ?")
@@ -204,12 +225,13 @@ async function ruleAcceptanceStatus(db: D1Database, user: AppUser) {
   };
 }
 
-async function userRequirementFields(db: D1Database, user: AppUser) {
+async function userRequirementFields(db: D1Database, user: AuthenticatedUser) {
   const rules = await ruleAcceptanceStatus(db, user);
   return {
     password_change_required: passwordChangeRequired(user),
     rules_required: rules.required,
     current_rule_version_id: rules.current?.id || null,
+    current_rule_published_at: rules.current?.published_at || null,
     current_rule_accepted_at: rules.accepted_at,
   };
 }
@@ -271,7 +293,7 @@ async function createPasswordReset(c: Ctx, user: AppUser, createdBy: string | nu
        (id, user_id, token_hash, created_by, created_at, expires_at)
      VALUES (?, ?, ?, ?, ?, ?)`,
   ).bind(ulid(), user.id, await sha256(token), createdBy, timestamp, expiresAt).run();
-  return { token, reset_url: absoluteUrl(c, `/reset-password/${token}`), expires_at: expiresAt };
+  return { token, reset_url: await absoluteUrl(c, `/reset-password/${token}`), expires_at: expiresAt };
 }
 
 async function clearExpiredFeedbackRequests(db: D1Database) {
@@ -360,34 +382,54 @@ async function servePublicAsset(c: Ctx, pathname: string, contentType?: string) 
   return nextResponse;
 }
 
+type InstanceIconSize = "16" | "32" | "192" | "512";
+
+async function serveInstanceAppIcon(c: Ctx, kind: "any" | "maskable", fallbackPath?: string, size: InstanceIconSize = "512") {
+  const basePrefix = kind === "maskable" ? "app_maskable_icon" : "app_icon";
+  const prefix = size === "512" ? basePrefix : `${basePrefix}_${size}`;
+  const settings = await publicInstanceSettings(c.env);
+  const key = settings[`${prefix}_r2_key`] as string | null;
+  const contentType = settings[`${prefix}_content_type`] as string | null;
+  if (!key && (size === "16" || size === "32")) return serveInstanceAppIcon(c, kind, fallbackPath, "192");
+  if (!key && size === "192" && !fallbackPath) return serveInstanceAppIcon(c, kind, undefined, "512");
+  if (!key) return fallbackPath ? servePublicAsset(c, fallbackPath, "image/png") : c.json({ error: "Not found" }, 404);
+  const object = await c.env.MEDIA.get(key);
+  if (!object && (size === "16" || size === "32")) return serveInstanceAppIcon(c, kind, fallbackPath, "192");
+  if (!object && size === "192" && !fallbackPath) return serveInstanceAppIcon(c, kind, undefined, "512");
+  if (!object) return fallbackPath ? servePublicAsset(c, fallbackPath, "image/png") : c.json({ error: "Not found" }, 404);
+  return new Response(object.body, {
+    headers: {
+      "content-type": contentType || object.httpMetadata?.contentType || "image/png",
+      "cache-control": "public, max-age=60",
+    },
+  });
+}
+
+async function storeInstanceAppIcon(c: Ctx, userId: string, prefix: "app_icon" | "app_maskable_icon", file: File, label: string, size?: Exclude<InstanceIconSize, "512">) {
+  const settingPrefix = size ? `${prefix}_${size}` : prefix;
+  const key = `instance/app-icons/${ulid()}-${file.name || label}`;
+  await putR2File(c.env.MEDIA, key, file, { kind: settingPrefix });
+  await setSetting(c.env.DB, `${settingPrefix}_r2_key`, key, userId, `Installable ${label} stored in private R2.`);
+  await setSetting(c.env.DB, `${settingPrefix}_content_type`, file.type || "image/png", userId, `Content type for the installable ${label}.`);
+  await setSetting(c.env.DB, `${settingPrefix}_updated_at`, now(), userId, `Cache marker for the installable ${label}.`);
+}
+
 app.get("/api/openapi.yaml", async (c) => servePublicAsset(c, "/api/openapi.yaml", "application/yaml; charset=utf-8"));
 app.get("/developers", async (c) => servePublicAsset(c, "/developers/", "text/html; charset=utf-8"));
 app.get("/developers.html", async (c) => servePublicAsset(c, "/developers/", "text/html; charset=utf-8"));
 app.get("/developers/api", async (c) => servePublicAsset(c, "/developers/", "text/html; charset=utf-8"));
+app.get("/favicon.ico", async (c) => serveInstanceAppIcon(c, "any", "/icon-192.png", "32"));
+app.get("/favicon-16.png", async (c) => serveInstanceAppIcon(c, "any", "/icon-192.png", "16"));
+app.get("/favicon-32.png", async (c) => serveInstanceAppIcon(c, "any", "/icon-192.png", "32"));
+app.get("/apple-touch-icon.png", async (c) => serveInstanceAppIcon(c, "any", "/icon-192.png", "192"));
+app.get("/icon-192.png", async (c) => serveInstanceAppIcon(c, "any", "/icon-192.png", "192"));
+app.get("/icon-512.png", async (c) => serveInstanceAppIcon(c, "any", "/icon-512.png", "512"));
+app.get("/icon-maskable-192.png", async (c) => serveInstanceAppIcon(c, "maskable", "/icon-maskable-192.png", "192"));
+app.get("/icon-maskable-512.png", async (c) => serveInstanceAppIcon(c, "maskable", "/icon-maskable-512.png", "512"));
 
 app.get("/manifest.webmanifest", async (c) => {
   const instance = await instanceInfo(c.env);
-  const customIcon = instance.app_icon_url
-    ? [
-        {
-          src: `${instance.app_icon_url}?v=${encodeURIComponent(String(await getSetting(c.env.DB, "app_icon_updated_at", "")))}`,
-          sizes: "512x512",
-          type: await getSetting(c.env.DB, "app_icon_content_type", "image/png"),
-          purpose: "any",
-        },
-      ]
-    : [];
-  const customMaskableIcon = instance.app_maskable_icon_url
-    ? [
-        {
-          src: `${instance.app_maskable_icon_url}?v=${encodeURIComponent(String(await getSetting(c.env.DB, "app_maskable_icon_updated_at", "")))}`,
-          sizes: "512x512",
-          type: await getSetting(c.env.DB, "app_maskable_icon_content_type", "image/png"),
-          purpose: "maskable",
-        },
-      ]
-    : [];
-  return c.json({
+  const manifest = {
     id: "/",
     name: instance.app_name || instance.name || "QuietCollective",
     short_name: instance.app_short_name || "QC",
@@ -400,15 +442,18 @@ app.get("/manifest.webmanifest", async (c) => {
     theme_color: instance.app_theme_color || "#050505",
     categories: ["photo", "social", "productivity"],
     icons: [
-      ...customIcon,
-      ...customMaskableIcon,
-      { src: "/icon.svg", sizes: "any", type: "image/svg+xml" },
-      { src: "/icon-192.png", sizes: "192x192", type: "image/png", purpose: "any" },
-      { src: "/icon-512.png", sizes: "512x512", type: "image/png", purpose: "any" },
       { src: "/icon-maskable-192.png", sizes: "192x192", type: "image/png", purpose: "maskable" },
       { src: "/icon-maskable-512.png", sizes: "512x512", type: "image/png", purpose: "maskable" },
+      { src: "/icon-192.png", sizes: "192x192", type: "image/png", purpose: "any" },
+      { src: "/icon-512.png", sizes: "512x512", type: "image/png", purpose: "any" },
     ],
-  }, 200, { "Cache-Control": "public, max-age=60" });
+  };
+  return new Response(JSON.stringify(manifest), {
+    headers: {
+      "content-type": "application/manifest+json; charset=utf-8",
+      "cache-control": "public, max-age=60",
+    },
+  });
 });
 
 app.get("/api/setup/status", async (c) => {
@@ -426,8 +471,9 @@ app.get("/api/setup/status", async (c) => {
 app.get("/api/instance", async (c) => c.json({ instance: await instanceInfo(c.env) }));
 
 app.get("/api/instance/logo", async (c) => {
-  const key = await getSetting(c.env.DB, "logo_r2_key", null) as string | null;
-  const contentType = await getSetting(c.env.DB, "logo_content_type", null) as string | null;
+  const settings = await publicInstanceSettings(c.env);
+  const key = settings.logo_r2_key as string | null;
+  const contentType = settings.logo_content_type as string | null;
   if (!key) return c.json({ error: "Not found" }, 404);
   const object = await c.env.MEDIA.get(key);
   if (!object) return c.json({ error: "Not found" }, 404);
@@ -439,20 +485,16 @@ app.get("/api/instance/logo", async (c) => {
   });
 });
 
+app.get("/api/instance/app-icon/:kind/:size", async (c) => {
+  const kind = c.req.param("kind") === "maskable" ? "maskable" : "any";
+  const rawSize = c.req.param("size");
+  const size: InstanceIconSize = rawSize === "16" || rawSize === "32" || rawSize === "192" ? rawSize : "512";
+  return serveInstanceAppIcon(c, kind, undefined, size);
+});
+
 app.get("/api/instance/app-icon/:kind", async (c) => {
   const kind = c.req.param("kind") === "maskable" ? "maskable" : "any";
-  const prefix = kind === "maskable" ? "app_maskable_icon" : "app_icon";
-  const key = await getSetting(c.env.DB, `${prefix}_r2_key`, null) as string | null;
-  const contentType = await getSetting(c.env.DB, `${prefix}_content_type`, null) as string | null;
-  if (!key) return c.json({ error: "Not found" }, 404);
-  const object = await c.env.MEDIA.get(key);
-  if (!object) return c.json({ error: "Not found" }, 404);
-  return new Response(object.body, {
-    headers: {
-      "content-type": contentType || object.httpMetadata?.contentType || "image/png",
-      "cache-control": "public, max-age=300",
-    },
-  });
+  return serveInstanceAppIcon(c, kind);
 });
 
 app.post("/api/setup/admin", async (c) => {
@@ -489,9 +531,9 @@ app.post("/api/setup/admin", async (c) => {
   ).bind(id, timestamp, timestamp).run().catch(() => undefined);
 
   await insertEvent(c.env, "user.joined", id, "user", id);
-  const token = await createSession(id, c.env);
-  c.header("Set-Cookie", sessionCookie(token));
   const user = await getUserById(c.env.DB, id);
+  const token = await createSession(user!, c.env);
+  c.header("Set-Cookie", sessionCookie(token));
   return c.json({ token, user: await publicUserWithRequirements(c.env.DB, user!, []) }, 201);
 });
 
@@ -503,7 +545,7 @@ app.post("/api/auth/login", async (c) => {
   if (!user || user.disabled_at || !(await bcrypt.compare(password, user.password_hash))) {
     return c.json({ error: "Invalid email or password" }, 401);
   }
-  const token = await createSession(user.id, c.env);
+  const token = await createSession(user, c.env);
   c.header("Set-Cookie", sessionCookie(token));
   return c.json({ token, user: await publicUserWithRequirements(c.env.DB, user, await getTags(c.env.DB, user.id)) });
 });
@@ -514,8 +556,11 @@ app.post("/api/auth/logout", (c) => {
 });
 
 app.get("/api/auth/me", requireUser, async (c) => {
-  const user = currentUser(c);
-  return c.json({
+  const cache = await prepareApiCache(c, "auth:me");
+  if (cache.fresh) return apiNotModified(cache);
+  const user = await fullCurrentUser(c);
+  if (!user) return c.json({ error: "Not authenticated" }, 401);
+  return cacheableJson(c, cache, {
     user: await publicUserWithRequirements(c.env.DB, user, await getTags(c.env.DB, user.id)),
     instance: await instanceInfo(c.env),
   });
@@ -540,7 +585,10 @@ app.patch("/api/auth/password", requireUser, async (c) => {
   ).bind(await bcrypt.hash(newPassword, 10), timestamp, timestamp, user.id).run();
   await insertEvent(c.env, "user.password_changed", user.id, "user", user.id);
   const updated = await getUserById(c.env.DB, user.id);
-  return c.json({ user: await publicUserWithRequirements(c.env.DB, updated!, await getTags(c.env.DB, user.id)) });
+  if (!updated) return c.json({ error: "Not authenticated" }, 401);
+  const token = await createSession(updated, c.env);
+  c.header("Set-Cookie", sessionCookie(token));
+  return c.json({ token, user: await publicUserWithRequirements(c.env.DB, updated, await getTags(c.env.DB, user.id)) });
 });
 
 app.post("/api/auth/password-reset/request", async (c) => {
@@ -557,7 +605,7 @@ app.post("/api/auth/password-reset/request", async (c) => {
       handle: user.handle,
       email: user.email,
       reset_url: reset.reset_url,
-      site_url: absoluteUrl(c, "/"),
+      site_url: await absoluteUrl(c, "/"),
     }).catch((error: unknown) => console.error("password reset email failed", error));
   }
   return c.json({ ok: true });
@@ -588,9 +636,16 @@ app.post("/api/auth/password-reset/complete", async (c) => {
   return c.json({ ok: true });
 });
 
+async function directR2MediaRedirect(c: Ctx, key: string | null | undefined, contentType: string | null | undefined, variant: string, filename?: string | null) {
+  const url = await r2PresignedGetUrl(c.env, key, contentType, variant, filename);
+  return url ? c.redirect(url, 302) : null;
+}
+
 app.get("/api/media/signed/:token", async (c) => {
   const payload = await readSignedMediaPayload(c.env, c.req.param("token"));
   if (!payload) return c.json({ error: "Forbidden" }, 403);
+  const redirect = await directR2MediaRedirect(c, payload.key, payload.content_type, payload.variant, payload.filename);
+  if (redirect) return redirect;
   const object = await c.env.MEDIA.get(payload.key);
   if (!object) return c.json({ error: "Not found" }, 404);
   return new Response(object.body, {
@@ -627,7 +682,7 @@ app.use("/api/*", async (c, next) => {
     await next();
     return;
   }
-  const user = c.get("user") as AppUser | undefined;
+  const user = c.get("user") as AuthenticatedUser | undefined;
   if (!user) {
     await next();
     return;
@@ -643,7 +698,11 @@ app.use("/api/*", async (c, next) => {
 });
 
 async function requireAdmin(c: Ctx) {
-  if (currentUser(c).role !== "admin") {
+  const user = await fullCurrentUser(c);
+  if (!user) {
+    return { ok: false as const, response: c.json({ error: "Not authenticated" }, 401) };
+  }
+  if (user.role !== "admin") {
     return { ok: false as const, response: c.json({ error: "Admin access required" }, 403) };
   }
   return { ok: true as const };
@@ -715,18 +774,26 @@ app.post("/api/admin/settings", async (c) => {
   const user = currentUser(c);
   const body = await readBody(c);
   const instanceName = stringField(body.instance_name || body.instanceName);
+  const rawSiteUrl = stringField(body.site_url || body.siteUrl);
+  const siteUrl = normalizeSiteUrl(rawSiteUrl);
+  if (rawSiteUrl.trim() && !siteUrl) return c.json({ error: "Site URL must be a valid http or https URL" }, 400);
   const appName = stringField(body.app_name || body.appName);
   const appShortName = stringField(body.app_short_name || body.appShortName || "QC").slice(0, 24);
   const appThemeColor = colorField(body.app_theme_color || body.appThemeColor, "#050505");
   const appBackgroundColor = colorField(body.app_background_color || body.appBackgroundColor, "#050505");
   const sourceCodeUrl = stringField(body.source_code_url || body.sourceCodeUrl);
   const logo = fileField(body.logo);
-  const appIcon = fileField(body.app_icon || body.appIcon);
-  const maskableIcon = fileField(body.app_maskable_icon || body.appMaskableIcon);
+  const appIcon = fileField(body.app_icon_512 || body.appIcon512 || body.app_icon || body.appIcon);
+  const appIcon16 = fileField(body.app_icon_16 || body.appIcon16);
+  const appIcon32 = fileField(body.app_icon_32 || body.appIcon32);
+  const appIcon192 = fileField(body.app_icon_192 || body.appIcon192);
+  const maskableIcon = fileField(body.app_maskable_icon_512 || body.appMaskableIcon512 || body.app_maskable_icon || body.appMaskableIcon);
+  const maskableIcon192 = fileField(body.app_maskable_icon_192 || body.appMaskableIcon192);
 
   if (instanceName) {
     await setSetting(c.env.DB, "instance_name", instanceName, user.id, "Display name for this community instance.");
   }
+  await setSetting(c.env.DB, "site_url", siteUrl, user.id, "Canonical public URL used for invite, email, and reset links.");
   await setSetting(c.env.DB, "app_name", appName || instanceName || "QuietCollective", user.id, "Installable app name shown by browsers and launchers.");
   await setSetting(c.env.DB, "app_short_name", appShortName || "QC", user.id, "Short installable app name.");
   await setSetting(c.env.DB, "app_theme_color", appThemeColor, user.id, "Theme color used by installable app shells.");
@@ -740,21 +807,26 @@ app.post("/api/admin/settings", async (c) => {
     await setSetting(c.env.DB, "logo_content_type", logo.type || "application/octet-stream", user.id, "Content type for the custom instance logo.");
   }
   if (appIcon) {
-    const key = `instance/app-icons/${ulid()}-${appIcon.name || "app-icon"}`;
-    await putR2File(c.env.MEDIA, key, appIcon, { kind: "app_icon" });
-    await setSetting(c.env.DB, "app_icon_r2_key", key, user.id, "Installable app icon stored in private R2.");
-    await setSetting(c.env.DB, "app_icon_content_type", appIcon.type || "image/png", user.id, "Content type for the installable app icon.");
-    await setSetting(c.env.DB, "app_icon_updated_at", now(), user.id, "Cache marker for the installable app icon.");
+    await storeInstanceAppIcon(c, user.id, "app_icon", appIcon, "app icon");
+  }
+  if (appIcon16) {
+    await storeInstanceAppIcon(c, user.id, "app_icon", appIcon16, "16px app icon", "16");
+  }
+  if (appIcon32) {
+    await storeInstanceAppIcon(c, user.id, "app_icon", appIcon32, "32px app icon", "32");
+  }
+  if (appIcon192) {
+    await storeInstanceAppIcon(c, user.id, "app_icon", appIcon192, "192px app icon", "192");
   }
   if (maskableIcon) {
-    const key = `instance/app-icons/${ulid()}-${maskableIcon.name || "maskable-icon"}`;
-    await putR2File(c.env.MEDIA, key, maskableIcon, { kind: "app_maskable_icon" });
-    await setSetting(c.env.DB, "app_maskable_icon_r2_key", key, user.id, "Installable app maskable icon stored in private R2.");
-    await setSetting(c.env.DB, "app_maskable_icon_content_type", maskableIcon.type || "image/png", user.id, "Content type for the installable app maskable icon.");
-    await setSetting(c.env.DB, "app_maskable_icon_updated_at", now(), user.id, "Cache marker for the installable app maskable icon.");
+    await storeInstanceAppIcon(c, user.id, "app_maskable_icon", maskableIcon, "maskable app icon");
+  }
+  if (maskableIcon192) {
+    await storeInstanceAppIcon(c, user.id, "app_maskable_icon", maskableIcon192, "192px maskable app icon", "192");
   }
 
   await insertEvent(c.env, "instance.settings_updated", user.id, "instance", "settings");
+  await refreshPublicInstanceSettings(c.env);
   return c.json({ instance: await instanceInfo(c.env) });
 });
 
@@ -778,6 +850,7 @@ app.post("/api/admin/content", async (c) => {
     if (Object.prototype.hasOwnProperty.call(body, key)) await setSetting(c.env.DB, key, stringField(body[key]), user.id, description);
   }
   await insertEvent(c.env, "instance.content_updated", user.id, "instance", "content");
+  await refreshPublicInstanceSettings(c.env);
   return c.json({ instance: await instanceInfo(c.env) });
 });
 
@@ -805,7 +878,8 @@ app.post("/api/admin/email/test", async (c) => {
   const admin = await requireAdmin(c);
   if (!admin.ok) return admin.response;
   const body = await readBody(c);
-  const user = currentUser(c);
+  const user = await fullCurrentUser(c);
+  if (!user) return c.json({ error: "Not authenticated" }, 401);
   const to = stringField(body.to || user.email).toLowerCase();
   if (!to) return c.json({ error: "Test recipient is required" }, 400);
   const config = await smtpConfig(c.env);
@@ -896,7 +970,7 @@ app.post("/api/admin/users/:id/password-reset", async (c) => {
     handle: target.handle,
     email: target.email,
     reset_url: reset.reset_url,
-    site_url: absoluteUrl(c, "/"),
+    site_url: await absoluteUrl(c, "/"),
   }).catch((error: unknown) => {
     console.error("admin password reset email failed", error);
     return false;
@@ -951,7 +1025,7 @@ app.post("/api/admin/invites", async (c) => {
   const role = stringField(body.role_on_join || body.roleOnJoin || "member") === "admin" ? "admin" : "member";
   const maxUses = Math.max(1, Math.min(100, Math.floor(numberField(body.max_uses || body.maxUses, 1))));
   const expiresAt = stringField(body.expires_at || body.expiresAt, "") || null;
-  const inviteUrl = absoluteUrl(c, `/invite/${token}`);
+  const inviteUrl = await absoluteUrl(c, `/invite/${token}`);
   const inviteTemplate = await getSetting(c.env.DB, "invite_text_template", INVITE_TEXT);
   const instance = await instanceInfo(c.env);
   const inviteText = applyTemplate(inviteTemplate, {
@@ -999,7 +1073,7 @@ app.get("/api/admin/invites", async (c) => {
       ...row,
       token: token || null,
       url: token ? `/invite/${token}` : null,
-      absolute_url: token ? absoluteUrl(c, `/invite/${token}`) : null,
+      absolute_url: token ? await absoluteUrl(c, `/invite/${token}`) : null,
     });
   }
   return c.json({ invites });
@@ -1086,7 +1160,7 @@ app.post("/api/invites/:token/accept", async (c) => {
       .bind(invite!.id, exactExistingUser.id)
       .first<{ id: string }>();
     if (acceptance && await bcrypt.compare(password, exactExistingUser.password_hash)) {
-      const session = await createSession(exactExistingUser.id, c.env);
+      const session = await createSession(exactExistingUser, c.env);
       c.header("Set-Cookie", sessionCookie(session));
       return c.json({ token: session, user: await publicUserWithRequirements(c.env.DB, exactExistingUser, await getTags(c.env.DB, exactExistingUser.id)), duplicate: true });
     }
@@ -1129,30 +1203,35 @@ app.post("/api/invites/:token/accept", async (c) => {
       instance_name: instance.name,
       handle: newUser.handle,
       email: newUser.email,
-      site_url: absoluteUrl(c, "/"),
+      site_url: await absoluteUrl(c, "/"),
     },
   ).catch((error: unknown) => console.error("welcome email failed", error));
-  const session = await createSession(id, c.env);
+  const session = await createSession(newUser, c.env);
   c.header("Set-Cookie", sessionCookie(session));
   return c.json({ token: session, user: await publicUserWithRequirements(c.env.DB, newUser, []) }, 201);
 });
 
 app.get("/api/members", async (c) => {
+  const cache = await prepareApiCache(c, "members");
+  if (cache.fresh) return apiNotModified(cache);
   const rows = await c.env.DB.prepare("SELECT * FROM users WHERE disabled_at IS NULL ORDER BY handle COLLATE NOCASE").all<AppUser>();
   const members = [];
   for (const user of rows.results) members.push(publicUser(user, await getTags(c.env.DB, user.id)));
-  return c.json({ members });
+  return cacheableJson(c, cache, { members });
 });
 
 app.get("/api/users/:handle", async (c) => {
   const handle = normalizeHandle(c.req.param("handle"));
+  const cache = await prepareApiCache(c, `user:${handle}`);
+  if (cache.fresh) return apiNotModified(cache);
   const user = await c.env.DB.prepare("SELECT * FROM users WHERE handle = ? AND disabled_at IS NULL").bind(handle).first<AppUser>();
   if (!user) return c.json({ error: "Not found" }, 404);
-  return c.json({ user: publicUser(user, await getTags(c.env.DB, user.id)) });
+  return cacheableJson(c, cache, { user: publicUser(user, await getTags(c.env.DB, user.id)) });
 });
 
 app.patch("/api/users/me", async (c) => {
-  const user = currentUser(c);
+  const user = await fullCurrentUser(c);
+  if (!user) return c.json({ error: "Not authenticated" }, 401);
   const body = await readBody(c);
   const handle = normalizeHandle(stringField(body.handle || user.handle));
   const displayName = handle;
@@ -1181,7 +1260,8 @@ app.post("/api/users/me/profile-image", async (c) => {
 });
 
 app.post("/api/users/me/avatar-crop", async (c) => {
-  const user = currentUser(c);
+  const user = await fullCurrentUser(c);
+  if (!user) return c.json({ error: "Not authenticated" }, 401);
   const body = await readBody(c);
   const file = fileField(body.avatar || body.image || body.file);
   const crop = typeof body.crop === "string" ? parseJson(body.crop, {}) : (body.crop || {});
@@ -1669,7 +1749,7 @@ async function createWorkCollaborator(c: Ctx, workId: string, body: WorkCollabor
          SET display_name = ?, role_suggestion_id = ?, role_label = ?, credit_order = ?, updated_at = ?
          WHERE id = ?`,
       ).bind(displayName, roleSuggestionId, roleLabel, creditOrder, timestamp, existingSameRole.id).run();
-      await insertEvent(c.env, "work.collaborator_updated", currentUser(c).id, "work", workId, "work_collaborator", existingSameRole.id, { collaborator_id: existingSameRole.id, user_id: linkedUserId });
+      await insertWorkCollaboratorEvent(c, "work.collaborator_updated", workId, existingSameRole.id, linkedUserId);
       return { ok: true, id: existingSameRole.id, display_name: displayName, user_id: linkedUserId, role_label: roleLabel, duplicate: true };
     }
   }
@@ -1703,8 +1783,20 @@ async function createWorkCollaborator(c: Ctx, workId: string, body: WorkCollabor
     return { ok: false, display_name: displayName, user_id: linkedUserId, role_label: roleLabel, error: error instanceof Error ? error.message : "Could not add collaborator" };
   }
 
-  await insertEvent(c.env, "work.collaborator_added", currentUser(c).id, "work", workId, "work_collaborator", id, { collaborator_id: id, user_id: linkedUserId });
+  await insertWorkCollaboratorEvent(c, "work.collaborator_added", workId, id, linkedUserId);
   return { ok: true, id, display_name: displayName, user_id: linkedUserId, role_label: roleLabel };
+}
+
+async function insertWorkCollaboratorEvent(
+  c: Ctx,
+  type: "work.collaborator_added" | "work.collaborator_updated",
+  workId: string,
+  collaboratorId: string,
+  linkedUserId: string | null,
+) {
+  const actorId = currentUser(c).id;
+  if (linkedUserId && linkedUserId === actorId) return;
+  await insertEvent(c.env, type, actorId, "work", workId, "work_collaborator", collaboratorId, { collaborator_id: collaboratorId, user_id: linkedUserId });
 }
 
 app.post("/api/galleries/:galleryId/works", async (c) => {
@@ -1798,6 +1890,8 @@ app.get("/api/works/:id/comments", async (c) => {
   const workId = c.req.param("id");
   const gate = await assertWorkCapability(c, workId, "view");
   if (!gate.ok) return gate.response;
+  const cache = await prepareApiCache(c, `work-comments:${workId}`);
+  if (cache.fresh) return apiNotModified(cache);
   const rows = await c.env.DB.prepare(
     `SELECT comments.*, users.display_name, users.handle,
             parent_comments.body AS parent_body,
@@ -1822,7 +1916,7 @@ app.get("/api/works/:id/comments", async (c) => {
   for (const comment of rows.results as Array<{ id: string }>) {
     comments.push({ ...comment, reactions: await reactionSummary(c.env.DB, currentUser(c), "comment", comment.id) });
   }
-  return c.json({ comments });
+  return cacheableJson(c, cache, { comments });
 });
 
 app.patch("/api/works/:id", async (c) => {
@@ -2019,7 +2113,7 @@ app.patch("/api/works/:id/collaborators/:collaboratorId", async (c) => {
     c.req.param("id"),
   ).run();
   const collab = await c.env.DB.prepare("SELECT user_id FROM work_collaborators WHERE id = ?").bind(c.req.param("collaboratorId")).first<{ user_id: string | null }>();
-  await insertEvent(c.env, "work.collaborator_updated", currentUser(c).id, "work", c.req.param("id"), "work_collaborator", c.req.param("collaboratorId"), { user_id: collab?.user_id || null });
+  await insertWorkCollaboratorEvent(c, "work.collaborator_updated", c.req.param("id"), c.req.param("collaboratorId"), collab?.user_id || null);
   return c.json({ ok: true });
 });
 
@@ -2260,7 +2354,9 @@ app.get("/api/activity", async (c) => {
   if (cache.fresh) return apiNotModified(cache);
   const rows = await c.env.DB.prepare(
     `WITH recent AS (
-       SELECT * FROM domain_events ORDER BY created_at DESC LIMIT 120
+       SELECT * FROM domain_events
+       WHERE type NOT IN ('rules.published', 'rules.accepted')
+       ORDER BY created_at DESC LIMIT 120
      )
      ${ACTIVITY_CONTEXT_SELECT}
      ORDER BY recent.created_at DESC`,
@@ -2306,7 +2402,7 @@ type VisibleNotificationOptions = {
   limit?: number;
 };
 
-async function visibleNotificationRows(c: Ctx, user: AppUser, options: VisibleNotificationOptions = {}) {
+async function visibleNotificationRows(c: Ctx, user: AuthenticatedUser, options: VisibleNotificationOptions = {}) {
   const limit = Math.max(1, Math.min(Math.floor(options.limit || 100), 1000));
   const since = stringField(options.since, "");
   const unreadWhere = options.unreadOnly ? "AND notifications.read_at IS NULL" : "";
@@ -2636,7 +2732,8 @@ async function buildExport(env: Env, user: AppUser, exportId: string) {
 }
 
 app.post("/api/exports/me", async (c) => {
-  const user = currentUser(c);
+  const user = await fullCurrentUser(c);
+  if (!user) return c.json({ error: "Not authenticated" }, 401);
   await cleanupExpiredUndownloadedExports(c.env, user.id);
   const id = ulid();
   const timestamp = now();
@@ -2689,6 +2786,8 @@ app.get("/api/media/users/:id/:kind", async (c) => {
   const key = kind === "avatar" ? user.avatar_key : user.profile_image_key;
   const contentType = kind === "avatar" ? user.avatar_content_type : user.profile_image_content_type;
   if (!key) return c.json({ error: "Not found" }, 404);
+  const redirect = await directR2MediaRedirect(c, key, contentType, kind);
+  if (redirect) return redirect;
   const object = await c.env.MEDIA.get(key);
   if (!object) return c.json({ error: "Not found" }, 404);
   return new Response(object.body, {
@@ -2707,6 +2806,8 @@ app.get("/api/media/galleries/:id/cover", async (c) => {
     .bind(id)
     .first<{ cover_image_key: string | null; cover_image_content_type: string | null }>();
   if (!gallery?.cover_image_key) return c.json({ error: "Not found" }, 404);
+  const redirect = await directR2MediaRedirect(c, gallery.cover_image_key, gallery.cover_image_content_type, "thumbnail");
+  if (redirect) return redirect;
   const object = await c.env.MEDIA.get(gallery.cover_image_key);
   if (!object) return c.json({ error: "Not found" }, 404);
   return new Response(object.body, {
@@ -2734,6 +2835,8 @@ app.get("/api/media/markdown-assets/:id", async (c) => {
   }
   const key = asset.preview_r2_key || asset.r2_key;
   const contentType = asset.preview_r2_key ? asset.preview_content_type : asset.content_type;
+  const redirect = await directR2MediaRedirect(c, key, contentType, "preview");
+  if (redirect) return redirect;
   const object = await c.env.MEDIA.get(key);
   if (!object) return c.json({ error: "Not found" }, 404);
   return new Response(object.body, {
@@ -2769,6 +2872,8 @@ app.get("/api/media/markdown-assets/:id/:variant", async (c) => {
     : variant === "original"
       ? asset.content_type
       : asset.preview_content_type || asset.content_type;
+  const redirect = await directR2MediaRedirect(c, key, contentType, variant);
+  if (redirect) return redirect;
   const object = await c.env.MEDIA.get(key);
   if (!object) return c.json({ error: "Not found" }, 404);
   return new Response(object.body, {
@@ -2789,6 +2894,8 @@ app.get("/api/media/works/:workId/versions/:versionId/:variant", async (c) => {
   const key = variant === "thumbnail" ? version.thumbnail_r2_key : variant === "preview" ? version.preview_r2_key : version.original_r2_key;
   const contentType = variant === "thumbnail" ? version.thumbnail_content_type : variant === "preview" ? version.preview_content_type : version.original_content_type;
   if (!key) return c.json({ error: "Not found" }, 404);
+  const redirect = await directR2MediaRedirect(c, key, contentType, variant, version.original_filename);
+  if (redirect) return redirect;
   const object = await c.env.MEDIA.get(key);
   if (!object) return c.json({ error: "Not found" }, 404);
   return new Response(object.body, {

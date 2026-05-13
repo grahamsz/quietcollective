@@ -27,6 +27,7 @@ function BrandingPanel({ settings, instance }) {
     <Panel title="Branding">
       <form class="form" id="settings-form">
         <div class="form-row"><label>Instance name</label><input name="instance_name" defaultValue={settingValue(settings, "instance_name", instance.name)} /></div>
+        <div class="form-row"><label>Site URL</label><input name="site_url" type="url" placeholder="https://example.com" defaultValue={settingValue(settings, "site_url", instance.site_url || "")} /></div>
         <div class="form-row"><label>Installable app name</label><input name="app_name" defaultValue={settingValue(settings, "app_name", instance.app_name || instance.name)} /></div>
         <div class="form-row"><label>Short app name</label><input name="app_short_name" maxLength="24" defaultValue={settingValue(settings, "app_short_name", instance.app_short_name || "QC")} /></div>
         <div class="grid two compact-grid">
@@ -35,8 +36,8 @@ function BrandingPanel({ settings, instance }) {
         </div>
         <div class="form-row"><label>Source code URL</label><input name="source_code_url" defaultValue={settingValue(settings, "source_code_url", instance.source_code_url || "")} /></div>
         <div class="form-row"><label>Site logo</label><input name="logo" type="file" accept="image/*" /></div>
-        <div class="form-row"><label>App icon</label><input name="app_icon" type="file" accept="image/png,image/svg+xml,image/webp,image/jpeg" /><span class="field-hint">Square 512x512 PNG works best.</span></div>
-        <div class="form-row"><label>Maskable app icon</label><input name="app_maskable_icon" type="file" accept="image/png,image/svg+xml,image/webp,image/jpeg" /><span class="field-hint">Use extra padding so launchers can crop it safely.</span></div>
+        <div class="form-row"><label>App icon</label><input name="app_icon" type="file" accept="image/png,image/svg+xml,image/webp,image/jpeg" /><span class="field-hint">Square source image; the app prepares favicon and install PNG sizes.</span></div>
+        <div class="form-row"><label>Maskable app icon</label><input name="app_maskable_icon" type="file" accept="image/png,image/svg+xml,image/webp,image/jpeg" /><span class="field-hint">Use extra padding so launchers can crop it safely; 192px and 512px PNGs are prepared.</span></div>
         <button class="button primary" type="submit">Save branding</button>
       </form>
     </Panel>
@@ -132,7 +133,7 @@ function RulesPanel({ rules }) {
           <article class="rule-version-card" key={rule.id}>
             <h3 class="card-title">{rule.superseded_at ? "Previous version" : "Current version"}</h3>
             <p class="description">Published {activeLabel(rule.published_at)} by @{rule.created_by_handle || "admin"} - {rule.accepted_count || 0} accepted</p>
-            <details><summary>Preview</summary><div class="markdown-body" dangerouslySetInnerHTML={{ __html: rule.body_html || renderMarkdown(rule.body_markdown) }} /></details>
+            <details><summary>Preview</summary><div class="markdown-body" dangerouslySetInnerHTML={{ __html: renderMarkdown(rule.body_markdown || rule.body_html) }} /></details>
           </article>
         )) : <Empty message="No server rules have been published." />}
       </div>

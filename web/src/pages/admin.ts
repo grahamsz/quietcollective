@@ -19,6 +19,62 @@ function bindAdminTabs() {
   activate(saved);
 }
 
+function imageLoaded(image) {
+  return new Promise((resolve, reject) => {
+    image.addEventListener("load", resolve, { once: true });
+    image.addEventListener("error", () => reject(new Error("Could not load icon image")), { once: true });
+  });
+}
+
+function canvasBlob(canvas) {
+  return new Promise((resolve, reject) => {
+    canvas.toBlob((blob) => blob ? resolve(blob) : reject(new Error("Could not prepare icon image")), "image/png");
+  });
+}
+
+async function resizeIconFile(file, size, basename) {
+  const url = URL.createObjectURL(file);
+  try {
+    const image = new Image();
+    image.decoding = "async";
+    image.src = url;
+    await imageLoaded(image);
+    const canvas = document.createElement("canvas");
+    canvas.width = size;
+    canvas.height = size;
+    const context = canvas.getContext("2d");
+    if (!context) throw new Error("Could not prepare icon canvas");
+    context.clearRect(0, 0, size, size);
+    context.imageSmoothingEnabled = true;
+    context.imageSmoothingQuality = "high";
+    const sourceWidth = image.naturalWidth || size;
+    const sourceHeight = image.naturalHeight || size;
+    const scale = Math.min(size / sourceWidth, size / sourceHeight);
+    const width = Math.round(sourceWidth * scale);
+    const height = Math.round(sourceHeight * scale);
+    context.drawImage(image, Math.round((size - width) / 2), Math.round((size - height) / 2), width, height);
+    const blob = await canvasBlob(canvas);
+    return new File([blob], `${basename}-${size}.png`, { type: "image/png" });
+  } finally {
+    URL.revokeObjectURL(url);
+  }
+}
+
+async function appendInstallIconRenditions(body, form) {
+  const appIcon = form.querySelector('input[name="app_icon"]')?.files?.[0];
+  const maskableIcon = form.querySelector('input[name="app_maskable_icon"]')?.files?.[0];
+  if (appIcon) {
+    body.set("app_icon_16", await resizeIconFile(appIcon, 16, "app-icon"));
+    body.set("app_icon_32", await resizeIconFile(appIcon, 32, "app-icon"));
+    body.set("app_icon_192", await resizeIconFile(appIcon, 192, "app-icon"));
+    body.set("app_icon_512", await resizeIconFile(appIcon, 512, "app-icon"));
+  }
+  if (maskableIcon) {
+    body.set("app_maskable_icon_192", await resizeIconFile(maskableIcon, 192, "maskable-app-icon"));
+    body.set("app_maskable_icon_512", await resizeIconFile(maskableIcon, 512, "maskable-app-icon"));
+  }
+}
+
 async function renderAdmin() {
   if (!(await ensureAuthed())) return;
   const [admin, settings, users, rules] = await Promise.all([
@@ -37,7 +93,14 @@ async function renderAdmin() {
   bindAdminTabs();
   document.querySelector("#settings-form")?.addEventListener("submit", async (event) => {
     event.preventDefault();
-    await api("/api/admin/settings", { method: "POST", body: new FormData(event.currentTarget) }).catch((error) => toast(error.message, "error"));
+    const body = new FormData(event.currentTarget);
+    try {
+      await appendInstallIconRenditions(body, event.currentTarget);
+      await api("/api/admin/settings", { method: "POST", body });
+    } catch (error) {
+      toast(error.message, "error");
+      return;
+    }
     await refreshMe();
     renderRoute();
   });

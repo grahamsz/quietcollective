@@ -10,16 +10,14 @@ function replaceOrThrow(source, pattern, replacement, label) {
   return source.replace(pattern, replacement);
 }
 
-const [appJs, stylesCss, manifest] = await Promise.all([
+const [appJs, stylesCss] = await Promise.all([
   readFile("public/app.js"),
   readFile("public/styles.css"),
-  readFile("public/manifest.webmanifest"),
 ]);
 
 const appHash = hash(appJs);
 const stylesHash = hash(stylesCss);
-const manifestHash = hash(manifest);
-const buildHash = hash(`${appHash}:${stylesHash}:${manifestHash}`);
+const buildHash = hash(`${appHash}:${stylesHash}`);
 
 let index = await readFile("public/index.html", "utf8");
 index = replaceOrThrow(
@@ -31,7 +29,7 @@ index = replaceOrThrow(
 index = replaceOrThrow(
   index,
   /href="\/manifest\.webmanifest(?:\?v=[^"]*)?"/,
-  `href="/manifest.webmanifest?v=${manifestHash}"`,
+  `href="/manifest.webmanifest"`,
   "manifest link",
 );
 index = replaceOrThrow(
@@ -66,12 +64,6 @@ serviceWorker = replaceOrThrow(
   /const APP_JS_URL = "\/app\.js(?:\?v=[^"]*)?";/,
   `const APP_JS_URL = "/app.js?v=${appHash}";`,
   "service worker app URL",
-);
-serviceWorker = replaceOrThrow(
-  serviceWorker,
-  /const MANIFEST_URL = "\/manifest\.webmanifest(?:\?v=[^"]*)?";/,
-  `const MANIFEST_URL = "/manifest.webmanifest?v=${manifestHash}";`,
-  "service worker manifest URL",
 );
 await writeFile("public/sw.js", serviceWorker);
 

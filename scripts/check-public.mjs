@@ -39,14 +39,17 @@ if (!/<meta name="qc-build" content="[a-f0-9]{12}">/.test(index)) {
   throw new Error("public/index.html must include the build fingerprint meta tag");
 }
 if (
-  !/href="\/manifest\.webmanifest\?v=[a-f0-9]{12}"/.test(index) ||
+  !/href="\/manifest\.webmanifest"/.test(index) ||
   !/href="\/styles\.css\?v=[a-f0-9]{12}"/.test(index) ||
   !/src="\/app\.js\?v=[a-f0-9]{12}"/.test(index)
 ) {
-  throw new Error("public/index.html must reference versioned manifest, app, and stylesheet assets");
+  throw new Error("public/index.html must reference the manifest and versioned app and stylesheet assets");
 }
 if (!/quietcollective-shell-[a-f0-9]{12}/.test(serviceWorker)) {
   throw new Error("public/sw.js must use a build-fingerprinted shell cache name");
+}
+if (/MANIFEST_URL|\/manifest\.webmanifest\?v=/.test(serviceWorker)) {
+  throw new Error("public/sw.js must not cache the dynamic web app manifest");
 }
 const manifest = JSON.parse(await readFile("public/manifest.webmanifest", "utf8"));
 if (manifest.display !== "standalone" || manifest.scope !== "/" || manifest.start_url !== "/" || !manifest.id) {

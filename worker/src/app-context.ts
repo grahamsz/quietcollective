@@ -1,8 +1,8 @@
 import type { Context } from "hono";
-import type { AppUser, Env } from "./types";
+import type { AuthenticatedUser, Env } from "./types";
 
 export type Variables = {
-  user: AppUser;
+  user: AuthenticatedUser;
 };
 
 export type AppContext = {

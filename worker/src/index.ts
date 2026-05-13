@@ -8,8 +8,8 @@ import type { AppContext, Ctx } from "./app-context";
 import { signedMediaUrl } from "./media";
 import { canCrosspostToGallery, ownsGallery, resolveGalleryCapabilities, resolveWorkCapabilities, type GalleryMemberPermissions } from "./permissions";
 import { registerRoutes } from "./routes";
-import { parseCookies, readSessionUserId } from "./sessions";
-import type { AppUser, Env, GalleryCapabilities, GalleryRow, WorkRow, WorkVersionRow } from "./types";
+import { createSession, expiredSessionCookie, parseCookies, readSession, sessionCookie, userFromSessionClaims } from "./sessions";
+import type { AppUser, AuthenticatedUser, Env, GalleryCapabilities, GalleryRow, WorkRow, WorkVersionRow } from "./types";
 import { sendWebPushTickle, webPushConfigured } from "./web-push";
 import {
   extractMentions,
@@ -39,6 +39,80 @@ const OWNER_CAPABILITIES: GalleryCapabilities = {
   manage_collaborators: true,
 };
 
+const PUBLIC_INSTANCE_SETTINGS_CACHE_KEY = "instance:public-settings:v1";
+const PUBLIC_INSTANCE_SETTINGS_CACHE_VERSION = 3;
+const PUBLIC_INSTANCE_SETTING_KEYS = [
+  "instance_name",
+  "site_url",
+  "app_name",
+  "app_short_name",
+  "app_theme_color",
+  "app_background_color",
+  "source_code_url",
+  "logo_r2_key",
+  "logo_content_type",
+  "app_icon_r2_key",
+  "app_icon_content_type",
+  "app_icon_updated_at",
+  "app_icon_16_r2_key",
+  "app_icon_16_content_type",
+  "app_icon_16_updated_at",
+  "app_icon_32_r2_key",
+  "app_icon_32_content_type",
+  "app_icon_32_updated_at",
+  "app_icon_192_r2_key",
+  "app_icon_192_content_type",
+  "app_icon_192_updated_at",
+  "app_maskable_icon_r2_key",
+  "app_maskable_icon_content_type",
+  "app_maskable_icon_updated_at",
+  "app_maskable_icon_192_r2_key",
+  "app_maskable_icon_192_content_type",
+  "app_maskable_icon_192_updated_at",
+  "content_notice",
+  "homepage_subtitle",
+  "login_subtitle",
+  "invite_subtitle",
+] as const;
+
+type PublicInstanceSettings = {
+  cache_version: number;
+  name: string;
+  site_url: string;
+  app_name: string;
+  app_short_name: string;
+  app_theme_color: string;
+  app_background_color: string;
+  source_code_url: string;
+  logo_url: string;
+  app_icon_url: string;
+  app_maskable_icon_url: string;
+  content_notice: string;
+  homepage_subtitle: string;
+  login_subtitle: string;
+  invite_subtitle: string;
+  logo_r2_key: string | null;
+  logo_content_type: string | null;
+  app_icon_r2_key: string | null;
+  app_icon_content_type: string | null;
+  app_icon_updated_at: string;
+  app_icon_16_r2_key: string | null;
+  app_icon_16_content_type: string | null;
+  app_icon_16_updated_at: string;
+  app_icon_32_r2_key: string | null;
+  app_icon_32_content_type: string | null;
+  app_icon_32_updated_at: string;
+  app_icon_192_r2_key: string | null;
+  app_icon_192_content_type: string | null;
+  app_icon_192_updated_at: string;
+  app_maskable_icon_r2_key: string | null;
+  app_maskable_icon_content_type: string | null;
+  app_maskable_icon_updated_at: string;
+  app_maskable_icon_192_r2_key: string | null;
+  app_maskable_icon_192_content_type: string | null;
+  app_maskable_icon_192_updated_at: string;
+};
+
 async function prepareApiCache(c: Ctx, scope: string) {
   return prepareApiCacheState(c.env.DB, currentUser(c).id, c.req.header("if-none-match"), scope);
 }
@@ -56,6 +130,16 @@ async function readBody(c: Ctx) {
 
 async function getUserById(db: D1Database, id: string) {
   return db.prepare("SELECT * FROM users WHERE id = ?").bind(id).first<AppUser>();
+}
+
+type SessionUserRow = AuthenticatedUser & { last_active_at: string | null };
+
+async function getSessionUserById(db: D1Database, id: string) {
+  return db.prepare(
+    `SELECT id, role, disabled_at, password_changed_at, force_password_change_at, last_active_at
+     FROM users
+     WHERE id = ?`,
+  ).bind(id).first<SessionUserRow>();
 }
 
 async function getUserByHandle(db: D1Database, handle: string) {
@@ -87,19 +171,39 @@ async function requireUser(c: Ctx, next: Next) {
   const token = bearer || parseCookies(c.req.header("cookie")).get("qc_session");
   if (!token) return c.json({ error: "Not authenticated" }, 401);
 
-  const userId = await readSessionUserId(token, c.env);
-  if (!userId) return c.json({ error: "Not authenticated" }, 401);
+  const session = await readSession(token, c.env).catch(() => null);
+  if (!session) return c.json({ error: "Not authenticated" }, 401);
 
-  const user = await getUserById(c.env.DB, userId);
-  if (!user || user.disabled_at) return c.json({ error: "Not authenticated" }, 401);
+  let user: AuthenticatedUser;
+  if (session.kind === "legacy" || session.stale) {
+    const userId = session.kind === "legacy" ? session.userId : session.claims.uid;
+    const row = await getSessionUserById(c.env.DB, userId);
+    if (!row || row.disabled_at) {
+      c.header("Set-Cookie", expiredSessionCookie());
+      return c.json({ error: "Not authenticated" }, 401);
+    }
+
+    user = {
+      id: row.id,
+      role: row.role,
+      disabled_at: null,
+      password_changed_at: row.password_changed_at,
+      force_password_change_at: row.force_password_change_at,
+    };
+
+    const refreshedToken = await createSession(user, c.env, { expiresAt: session.expiresAt });
+    c.header("Set-Cookie", sessionCookie(refreshedToken, session.expiresAt));
+
+    const lastActive = row.last_active_at ? Date.parse(row.last_active_at) : 0;
+    if (requestCountsAsActivity(c) && (!lastActive || Date.now() - lastActive > 60 * 60 * 1000)) {
+      const timestamp = now();
+      await c.env.DB.prepare("UPDATE users SET last_active_at = ? WHERE id = ?").bind(timestamp, user.id).run().catch(() => undefined);
+    }
+  } else {
+    user = userFromSessionClaims(session.claims);
+  }
 
   c.set("user", user);
-  const lastActive = user.last_active_at ? Date.parse(user.last_active_at) : 0;
-  if (requestCountsAsActivity(c) && (!lastActive || Date.now() - lastActive > 60 * 60 * 1000)) {
-    const timestamp = now();
-    await c.env.DB.prepare("UPDATE users SET last_active_at = ? WHERE id = ?").bind(timestamp, user.id).run().catch(() => undefined);
-    user.last_active_at = timestamp;
-  }
   await next();
 }
 
@@ -107,7 +211,16 @@ function currentUser(c: Ctx) {
   return c.get("user");
 }
 
-function passwordChangeRequired(user: AppUser) {
+async function fullCurrentUser(c: Ctx) {
+  const user = await getUserById(c.env.DB, currentUser(c).id);
+  if (!user || user.disabled_at) {
+    c.header("Set-Cookie", expiredSessionCookie());
+    return null;
+  }
+  return user;
+}
+
+function passwordChangeRequired(user: AuthenticatedUser) {
   if (!user.force_password_change_at) return false;
   if (!user.password_changed_at) return true;
   return Date.parse(user.password_changed_at) < Date.parse(user.force_password_change_at);
@@ -159,34 +272,99 @@ async function setSetting(db: D1Database, key: string, value: unknown, actorId: 
   ).bind(key, jsonText({ value }), description, actorId, timestamp, timestamp).run();
 }
 
-async function instanceInfo(env: Env) {
-  const name = await getSetting(env.DB, "instance_name", env.INSTANCE_NAME || "QuietCollective");
-  const appName = await getSetting(env.DB, "app_name", name);
-  const appShortName = await getSetting(env.DB, "app_short_name", "QC");
-  const appThemeColor = await getSetting(env.DB, "app_theme_color", "#050505");
-  const appBackgroundColor = await getSetting(env.DB, "app_background_color", "#050505");
-  const sourceCodeUrl = await getSetting(env.DB, "source_code_url", env.SOURCE_CODE_URL || "");
-  const logoKey = await getSetting<string | null>(env.DB, "logo_r2_key", null);
-  const appIconKey = await getSetting<string | null>(env.DB, "app_icon_r2_key", null);
-  const maskableIconKey = await getSetting<string | null>(env.DB, "app_maskable_icon_r2_key", null);
-  const contentNotice = await getSetting(env.DB, "content_notice", "Uploaded user content remains owned by the uploader or rights holder.");
-  const homepageSubtitle = await getSetting(env.DB, "homepage_subtitle", "Private image galleries, critique, collaborator credits, and member profiles for logged-in members.");
-  const loginSubtitle = await getSetting(env.DB, "login_subtitle", "");
-  const inviteSubtitle = await getSetting(env.DB, "invite_subtitle", "");
+function valueFromSettings<T>(values: Record<string, unknown>, key: string, fallback: T): T {
+  const value = values[key];
+  return value == null ? fallback : value as T;
+}
+
+function buildPublicInstanceSettings(env: Env, values: Record<string, unknown>): PublicInstanceSettings {
+  const name = valueFromSettings(values, "instance_name", env.INSTANCE_NAME || "QuietCollective");
+  const appName = valueFromSettings(values, "app_name", name);
+  const logoKey = valueFromSettings<string | null>(values, "logo_r2_key", null);
+  const appIconKey = valueFromSettings<string | null>(values, "app_icon_r2_key", null);
+  const maskableIconKey = valueFromSettings<string | null>(values, "app_maskable_icon_r2_key", null);
   return {
+    cache_version: PUBLIC_INSTANCE_SETTINGS_CACHE_VERSION,
     name,
+    site_url: valueFromSettings(values, "site_url", env.SITE_URL || ""),
     app_name: appName,
-    app_short_name: appShortName,
-    app_theme_color: appThemeColor,
-    app_background_color: appBackgroundColor,
-    source_code_url: sourceCodeUrl,
+    app_short_name: valueFromSettings(values, "app_short_name", "QC"),
+    app_theme_color: valueFromSettings(values, "app_theme_color", "#050505"),
+    app_background_color: valueFromSettings(values, "app_background_color", "#050505"),
+    source_code_url: valueFromSettings(values, "source_code_url", env.SOURCE_CODE_URL || ""),
     logo_url: logoKey ? "/api/instance/logo" : "",
     app_icon_url: appIconKey ? "/api/instance/app-icon/any" : "",
     app_maskable_icon_url: maskableIconKey ? "/api/instance/app-icon/maskable" : "",
-    content_notice: contentNotice,
-    homepage_subtitle: homepageSubtitle,
-    login_subtitle: loginSubtitle,
-    invite_subtitle: inviteSubtitle,
+    content_notice: valueFromSettings(values, "content_notice", "Uploaded user content remains owned by the uploader or rights holder."),
+    homepage_subtitle: valueFromSettings(values, "homepage_subtitle", "Private image galleries, critique, collaborator credits, and member profiles for logged-in members."),
+    login_subtitle: valueFromSettings(values, "login_subtitle", ""),
+    invite_subtitle: valueFromSettings(values, "invite_subtitle", ""),
+    logo_r2_key: logoKey,
+    logo_content_type: valueFromSettings<string | null>(values, "logo_content_type", null),
+    app_icon_r2_key: appIconKey,
+    app_icon_content_type: valueFromSettings<string | null>(values, "app_icon_content_type", null),
+    app_icon_updated_at: valueFromSettings(values, "app_icon_updated_at", ""),
+    app_icon_16_r2_key: valueFromSettings<string | null>(values, "app_icon_16_r2_key", null),
+    app_icon_16_content_type: valueFromSettings<string | null>(values, "app_icon_16_content_type", null),
+    app_icon_16_updated_at: valueFromSettings(values, "app_icon_16_updated_at", ""),
+    app_icon_32_r2_key: valueFromSettings<string | null>(values, "app_icon_32_r2_key", null),
+    app_icon_32_content_type: valueFromSettings<string | null>(values, "app_icon_32_content_type", null),
+    app_icon_32_updated_at: valueFromSettings(values, "app_icon_32_updated_at", ""),
+    app_icon_192_r2_key: valueFromSettings<string | null>(values, "app_icon_192_r2_key", null),
+    app_icon_192_content_type: valueFromSettings<string | null>(values, "app_icon_192_content_type", null),
+    app_icon_192_updated_at: valueFromSettings(values, "app_icon_192_updated_at", ""),
+    app_maskable_icon_r2_key: maskableIconKey,
+    app_maskable_icon_content_type: valueFromSettings<string | null>(values, "app_maskable_icon_content_type", null),
+    app_maskable_icon_updated_at: valueFromSettings(values, "app_maskable_icon_updated_at", ""),
+    app_maskable_icon_192_r2_key: valueFromSettings<string | null>(values, "app_maskable_icon_192_r2_key", null),
+    app_maskable_icon_192_content_type: valueFromSettings<string | null>(values, "app_maskable_icon_192_content_type", null),
+    app_maskable_icon_192_updated_at: valueFromSettings(values, "app_maskable_icon_192_updated_at", ""),
+  };
+}
+
+async function publicInstanceSettingsFromD1(env: Env) {
+  const placeholders = PUBLIC_INSTANCE_SETTING_KEYS.map(() => "?").join(", ");
+  const rows = await env.DB.prepare(`SELECT key, value_json FROM instance_settings WHERE key IN (${placeholders})`)
+    .bind(...PUBLIC_INSTANCE_SETTING_KEYS)
+    .all<{ key: string; value_json: string }>();
+  const values: Record<string, unknown> = {};
+  for (const row of rows.results) values[row.key] = parseJson<{ value?: unknown }>(row.value_json, {}).value;
+  return buildPublicInstanceSettings(env, values);
+}
+
+async function publicInstanceSettings(env: Env, options: { refresh?: boolean } = {}) {
+  if (!options.refresh && env.SETTINGS_CACHE) {
+    const cached = await env.SETTINGS_CACHE
+      .get<PublicInstanceSettings>(PUBLIC_INSTANCE_SETTINGS_CACHE_KEY, { type: "json", cacheTtl: 60 })
+      .catch(() => null);
+    if (cached?.cache_version === PUBLIC_INSTANCE_SETTINGS_CACHE_VERSION) return cached;
+  }
+  const settings = await publicInstanceSettingsFromD1(env);
+  await env.SETTINGS_CACHE?.put(PUBLIC_INSTANCE_SETTINGS_CACHE_KEY, JSON.stringify(settings)).catch(() => undefined);
+  return settings;
+}
+
+async function refreshPublicInstanceSettings(env: Env) {
+  return publicInstanceSettings(env, { refresh: true });
+}
+
+async function instanceInfo(env: Env) {
+  const settings = await publicInstanceSettings(env);
+  return {
+    name: settings.name,
+    site_url: settings.site_url,
+    app_name: settings.app_name,
+    app_short_name: settings.app_short_name,
+    app_theme_color: settings.app_theme_color,
+    app_background_color: settings.app_background_color,
+    source_code_url: settings.source_code_url,
+    logo_url: settings.logo_url,
+    app_icon_url: settings.app_icon_url,
+    app_maskable_icon_url: settings.app_maskable_icon_url,
+    content_notice: settings.content_notice,
+    homepage_subtitle: settings.homepage_subtitle,
+    login_subtitle: settings.login_subtitle,
+    invite_subtitle: settings.invite_subtitle,
   };
 }
 
@@ -204,7 +382,7 @@ function galleryServerVisible(gallery: Pick<GalleryRow, "visibility" | "ownershi
   return gallery.ownership_type === "whole_server" || !!gallery.whole_server_upload || gallery.visibility === "server_public";
 }
 
-async function galleryCapabilities(db: D1Database, user: AppUser, galleryId: string): Promise<GalleryCapabilities> {
+async function galleryCapabilities(db: D1Database, user: AuthenticatedUser, galleryId: string): Promise<GalleryCapabilities> {
   const gallery = await db.prepare("SELECT * FROM galleries WHERE id = ?").bind(galleryId).first<GalleryRow>();
   if (!gallery) return EMPTY_CAPABILITIES;
   if (ownsGallery(user, gallery)) return OWNER_CAPABILITIES;
@@ -250,7 +428,7 @@ async function workGalleryLinks(db: D1Database, work: WorkRow) {
   return fallback.results;
 }
 
-async function workCapabilities(db: D1Database, user: AppUser, workId: string) {
+async function workCapabilities(db: D1Database, user: AuthenticatedUser, workId: string) {
   const work = await getWork(db, workId);
   if (!work) return { exists: false, work: null, caps: EMPTY_CAPABILITIES, version: false, crosspost: false };
   const galleries = await workGalleryLinks(db, work);
@@ -342,7 +520,7 @@ async function assertWorkCrosspostCapability(c: Ctx, workId: string) {
   return { ok: true as const, ...result };
 }
 
-async function canViewTarget(db: D1Database, user: AppUser, targetType: string, targetId: string): Promise<boolean> {
+async function canViewTarget(db: D1Database, user: AuthenticatedUser, targetType: string, targetId: string): Promise<boolean> {
   if (targetType === "profile") {
     return !!(await db.prepare("SELECT id FROM users WHERE id = ? AND disabled_at IS NULL").bind(targetId).first());
   }
@@ -363,7 +541,7 @@ async function canViewTarget(db: D1Database, user: AppUser, targetType: string, 
   return false;
 }
 
-async function canCommentTarget(db: D1Database, user: AppUser, targetType: string, targetId: string): Promise<boolean> {
+async function canCommentTarget(db: D1Database, user: AuthenticatedUser, targetType: string, targetId: string): Promise<boolean> {
   if (targetType === "profile") return canViewTarget(db, user, targetType, targetId);
   if (targetType === "gallery") return (await galleryCapabilities(db, user, targetId)).comment;
   if (targetType === "work") return (await workCapabilities(db, user, targetId)).caps.comment;
@@ -636,7 +814,7 @@ async function galleryAccessUsers(db: D1Database, galleryId: string, capability:
   return rows.results;
 }
 
-async function serializeGallery(env: Env, user: AppUser, gallery: GalleryRow) {
+async function serializeGallery(env: Env, user: AuthenticatedUser, gallery: GalleryRow) {
   const [pinned, ownership, submitters, viewers, workCount, reaction] = await Promise.all([
     env.DB.prepare("SELECT pinned_at FROM user_gallery_pins WHERE user_id = ? AND gallery_id = ?")
       .bind(user.id, gallery.id)
@@ -705,11 +883,13 @@ async function serializeGallery(env: Env, user: AppUser, gallery: GalleryRow) {
     },
     cover_image_url: coverVersion?.thumbnail_r2_key
       ? (await signedMediaUrl(env, coverVersion.thumbnail_r2_key, coverVersion.thumbnail_content_type, "thumbnail")) || `/api/media/works/${coverVersion.work_id}/versions/${coverVersion.id}/thumbnail`
-      : gallery.cover_image_key ? `/api/media/galleries/${gallery.id}/cover` : null,
+      : gallery.cover_image_key
+        ? (await signedMediaUrl(env, gallery.cover_image_key, gallery.cover_image_content_type, "thumbnail")) || `/api/media/galleries/${gallery.id}/cover`
+        : null,
   };
 }
 
-async function reactionSummary(db: D1Database, user: AppUser, targetType: "work" | "comment" | "gallery", targetId: string) {
+async function reactionSummary(db: D1Database, user: AuthenticatedUser, targetType: "work" | "comment" | "gallery", targetId: string) {
   const row = await db.prepare(
     "SELECT COUNT(*) AS count FROM reactions WHERE target_type = ? AND target_id = ? AND reaction = 'heart'",
   ).bind(targetType, targetId).first<{ count: number }>();
@@ -722,7 +902,7 @@ async function reactionSummary(db: D1Database, user: AppUser, targetType: "work"
   };
 }
 
-async function serializeWork(env: Env, user: AppUser, work: WorkRow) {
+async function serializeWork(env: Env, user: AuthenticatedUser, work: WorkRow) {
   const currentVersion = work.current_version_id
     ? await env.DB.prepare("SELECT * FROM work_versions WHERE id = ?").bind(work.current_version_id).first<WorkVersionRow>()
     : null;
@@ -796,7 +976,7 @@ type GalleryWorkListRow = WorkRow & {
   collaborator_can_comment: number | null;
 };
 
-async function serializeGalleryWorkListItem(env: Env, user: AppUser, row: GalleryWorkListRow, caps: GalleryCapabilities) {
+async function serializeGalleryWorkListItem(env: Env, user: AuthenticatedUser, row: GalleryWorkListRow, caps: GalleryCapabilities) {
   const collaborator = row.collaborator_can_edit == null && row.collaborator_can_version == null && row.collaborator_can_comment == null
     ? null
     : {
@@ -857,10 +1037,13 @@ registerRoutes(app, {
   ensureWorkRoleSuggestion,
   requireUser,
   currentUser,
+  fullCurrentUser,
   publicUser,
   getTags,
   getSetting,
   setSetting,
+  publicInstanceSettings,
+  refreshPublicInstanceSettings,
   instanceInfo,
   adminCount,
   isAdmin,

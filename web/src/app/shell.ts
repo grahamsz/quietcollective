@@ -33,7 +33,6 @@ function brandMark() {
   return `<div class="brand-mark" aria-hidden="true">QC</div>`;
 }
 
-
 /** Wraps authenticated page views with sidebar, topbar, and shared navigation. */
 function pageShell(content, options = {}) {
   const myGalleries = state.galleries
@@ -43,6 +42,9 @@ function pageShell(content, options = {}) {
   const popularTags = (state.popularTags || []).slice(0, 5);
   const source = state.instance.source_code_url
     ? `<a class="source-link is-visible" href="${escapeHtml(state.instance.source_code_url)}" rel="noreferrer">Source Code</a>`
+    : "";
+  const rules = state.me?.current_rule_version_id
+    ? `<a class="source-link is-visible" href="/rules/accept" data-link>Server Rules</a>`
     : "";
   return `
     <div class="layout">
@@ -60,6 +62,7 @@ function pageShell(content, options = {}) {
           ${state.me?.role === "admin" ? `<nav class="admin-nav" aria-label="Admin"><a href="/admin" ${location.pathname === "/admin" ? 'aria-current="page"' : ""} data-link>Admin</a><a href="/admin/invites" ${location.pathname === "/admin/invites" ? 'aria-current="page"' : ""} data-link>Invites</a></nav>` : ""}
           <p class="rights-note">${escapeHtml(state.instance.content_notice || "Uploaded user content remains owned by the uploader or rights holder.")} Powered by the open source <a href="${UPSTREAM_SOURCE_URL}" rel="noreferrer">QuietCollective project</a>.</p>
           ${source}
+          ${rules}
         </div>
       </aside>
       <main class="main-column">

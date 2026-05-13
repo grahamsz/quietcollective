@@ -196,7 +196,7 @@ Admin pages manage instance/admin structures. Do not treat `role = "admin"` as c
 
 R2 media is private. Do not make `quietcollective-media` public.
 
-Media should be served through permission-checked Worker routes:
+Media URLs must be minted only after the Worker has checked content permissions. When `R2_ACCOUNT_ID`, `R2_BUCKET_NAME`, `R2_ACCESS_KEY_ID`, and `R2_SECRET_ACCESS_KEY` are configured, `worker/src/media.ts` returns short-lived R2 S3 presigned GET URLs. Without those values it falls back to the app's signed Worker route.
 
 - Signed media helper: `worker/src/media.ts`
 - Signed media route: `/api/media/signed/:token`

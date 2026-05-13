@@ -159,7 +159,7 @@ export function notFoundView() {
 export { currentWorkGallery };
 
 /** Mounts the TSX work detail route at `/works/:id`. */
-export function workDetailView({ id, work, gallery, comments, versions, collaborators, crosspostOptions }) {
+export function workDetailView({ id, work, gallery, comments, versions, collaborators, crosspostOptions, lightboxWorks }) {
   return islandPlaceholder("work-detail-view", {
     id,
     work,
@@ -168,6 +168,7 @@ export function workDetailView({ id, work, gallery, comments, versions, collabor
     reactionButtonHtml: reactionButton("work", id, work.reactions),
     collaborators,
     crosspostOptions,
+    lightboxWorks,
     collaboratorRowsHtml: roleDatalist("detail-work-role-options"),
   });
 }

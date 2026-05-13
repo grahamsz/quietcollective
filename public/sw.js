@@ -1,7 +1,6 @@
-const CACHE_NAME = "quietcollective-shell-e6215bf4b82e";
-const STYLES_CSS_URL = "/styles.css?v=2d8816497783";
-const APP_JS_URL = "/app.js?v=8ef77ce2a029";
-const MANIFEST_URL = "/manifest.webmanifest?v=7703ee8ba8cf";
+const CACHE_NAME = "quietcollective-shell-7c0a904ee53b";
+const STYLES_CSS_URL = "/styles.css?v=4e62bf8cf9f3";
+const APP_JS_URL = "/app.js?v=6cadb1778ec2";
 const NOTIFICATION_STATE_CACHE = "quietcollective-notification-state-v1";
 const NOTIFICATION_STATE_URL = "/__quietcollective_notification_state__";
 const NOTIFICATION_RECENT_POLL_INTERVAL_MS = 60 * 1000;
@@ -16,7 +15,6 @@ const STATIC_URLS = [
   APP_JS_URL,
   "/vendor/easymde/easymde.min.css",
   "/vendor/easymde/easymde.min.js",
-  MANIFEST_URL,
   "/icon.svg",
 ];
 const STATIC_PATHS = new Set(STATIC_URLS.map((path) => new URL(path, self.location.origin).pathname));

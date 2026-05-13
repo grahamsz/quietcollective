@@ -55,7 +55,13 @@ export function WorkTile({ work, index = 0, galleryId = "" }: WorkTileProps) {
   const updated = relativeTime(work.updated_at || work.created_at);
   const meta = hearts ? `${hearts} heart${hearts === 1 ? "" : "s"}, ${updated}` : updated;
   return (
-    <a href={href} class="image-tile media-reveal" data-link data-media-reveal style={tileRevealStyle(index)}>
+    <a
+      href={href}
+      class="image-tile media-reveal"
+      data-link
+      data-media-reveal
+      style={tileRevealStyle(index)}
+    >
       {imageUrl ? <ProtectedImage src={imageUrl} alt={work.title} /> : <span class="image-placeholder">{initials(work.title)}</span>}
       <WorkAuthorPill work={work} />
       <FeedbackRequestedIndicator work={work} />

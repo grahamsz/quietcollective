@@ -9,6 +9,14 @@
     "not_found_handling": "single-page-application",
     "run_worker_first": [
       "/api/*",
+      "/favicon.ico",
+      "/favicon-16.png",
+      "/favicon-32.png",
+      "/apple-touch-icon.png",
+      "/icon-192.png",
+      "/icon-512.png",
+      "/icon-maskable-192.png",
+      "/icon-maskable-512.png",
       "/developers*",
       "/manifest.webmanifest"
     ]
@@ -44,6 +52,9 @@
   },
   "vars": {
     "INSTANCE_NAME": "QuietCollective",
-    "SOURCE_CODE_URL": ""
+    "SITE_URL": "",
+    "SOURCE_CODE_URL": "",
+    "R2_ACCOUNT_ID": "",
+    "R2_BUCKET_NAME": "quietcollective-media"
   }
 }

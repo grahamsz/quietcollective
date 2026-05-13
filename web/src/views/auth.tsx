@@ -1,5 +1,6 @@
 // @ts-nocheck
 import { renderMarkdown } from "../lib/markdown";
+import { formatDate } from "../lib/utils";
 
 /** Renders the disabled setup message used when an admin account already exists. */
 export function SetupDisabledView() {
@@ -114,22 +115,25 @@ export function ForcePasswordChangeView() {
 export function RulesAcceptView({ rules }) {
   const current = rules?.current || null;
   const previous = rules?.previous_accepted || null;
+  const required = !!rules?.required;
+  const acceptedAt = rules?.accepted_at || (previous?.id === current?.id ? previous?.accepted_at : null);
   return (
     <section class="view narrow">
-      <div class="view-header"><div><p class="eyebrow">Server rules</p><h1>Review and accept</h1><p class="lede">You need to accept the current server rules before posting or interacting.</p></div></div>
+      <div class="view-header"><div><p class="eyebrow">Server rules</p><h1>{required ? "Review and accept" : "Current rules"}</h1><p class="lede">{required ? "You need to accept the current server rules before posting or interacting." : "These are the current server rules for this instance."}</p></div></div>
       <section class="panel">
         <div class="panel-body">
-          {current ? <div class="markdown-body rules-body" dangerouslySetInnerHTML={{ __html: current.body_html || renderMarkdown(current.body_markdown) }} /> : <p class="description">No server rules have been published.</p>}
+          {current ? <p class="description">Current version published {formatDate(current.published_at)}.{acceptedAt ? ` You agreed to this version ${formatDate(acceptedAt)}.` : ""}</p> : null}
+          {current ? <div class="markdown-body rules-body" dangerouslySetInnerHTML={{ __html: renderMarkdown(current.body_markdown || current.body_html) }} /> : <p class="description">No server rules have been published.</p>}
           {previous && previous.id !== current?.id ? (
             <details class="rule-history">
               <summary>Previous version you accepted</summary>
-              <div class="markdown-body" dangerouslySetInnerHTML={{ __html: previous.body_html || renderMarkdown(previous.body_markdown) }} />
+              <div class="markdown-body" dangerouslySetInnerHTML={{ __html: renderMarkdown(previous.body_markdown || previous.body_html) }} />
             </details>
           ) : null}
-          <form class="form" id="rules-accept-form">
+          {required ? <form class="form" id="rules-accept-form">
             <label class="check-row"><input type="checkbox" name="accept" required /> I agree to follow these server rules.</label>
             <button class="button primary" type="submit" disabled={!current}>Accept rules</button>
-          </form>
+          </form> : null}
         </div>
       </section>
     </section>

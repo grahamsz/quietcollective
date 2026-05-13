@@ -360,8 +360,21 @@ function WorkDangerZone({ id, work, gallery }) {
 }
 
 /** Renders the work detail route including media, actions, collaborators, and comments. */
-export function WorkDetailView({ id, work, gallery, commentsHtml, reactionButtonHtml, collaborators, crosspostOptions, collaboratorRowsHtml }) {
+export function WorkDetailView({ id, work, gallery, commentsHtml, reactionButtonHtml, collaborators, crosspostOptions, collaboratorRowsHtml, lightboxWorks }) {
   const version = work.current_version;
+  const lightboxItems = (lightboxWorks || [work])
+    .map((item) => {
+      const itemVersion = item.current_version || {};
+      const src = itemVersion.preview_url || itemVersion.thumbnail_url || "";
+      return src ? {
+        src,
+        alt: item.title || "",
+        title: item.title || "",
+        href: `/works/${item.id}${gallery?.id ? `?gallery=${encodePath(gallery.id)}` : ""}`,
+      } : null;
+    })
+    .filter(Boolean);
+  const lightboxIndex = Math.max(0, lightboxItems.findIndex((item) => item.href.startsWith(`/works/${id}`)));
   return (
     <section class="view work-view">
       <div class="view-header">
@@ -382,7 +395,19 @@ export function WorkDetailView({ id, work, gallery, commentsHtml, reactionButton
           {work.can_create_version ? <button class="button primary" type="button" data-show-version-form><Icon name="upload" /><span>Add New Version</span></button> : null}
         </div>
       </div>
-      {version?.preview_url ? <div class="media-frame"><ProtectedImage src={version.preview_url} alt={work.title} /></div> : <Empty message="No image version is available." />}
+      {version?.preview_url ? (
+        <div
+          class="media-frame"
+          data-lightbox-item="true"
+          data-lightbox-src={version.preview_url}
+          data-lightbox-title={work.title || undefined}
+          data-lightbox-href={`/works/${id}`}
+          data-lightbox-items={JSON.stringify(lightboxItems)}
+          data-lightbox-index={String(lightboxIndex)}
+        >
+          <ProtectedImage src={version.preview_url} alt={work.title} />
+        </div>
+      ) : <Empty message="No image version is available." />}
       <WorkVersionUploadPanel id={id} work={work} />
       <WorkCrosspostNotice work={work} currentGallery={gallery} />
       <div class="work-info-stack">

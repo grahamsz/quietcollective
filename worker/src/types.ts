@@ -4,11 +4,17 @@ export interface Env {
   ASSETS: Fetcher;
   DB: D1Database;
   MEDIA: R2Bucket;
+  SETTINGS_CACHE?: KVNamespace;
   JOBS?: Queue;
   JWT_SECRET?: string;
   ADMIN_SETUP_TOKEN?: string;
   INSTANCE_NAME?: string;
+  SITE_URL?: string;
   SOURCE_CODE_URL?: string;
+  R2_ACCOUNT_ID?: string;
+  R2_ACCESS_KEY_ID?: string;
+  R2_SECRET_ACCESS_KEY?: string;
+  R2_BUCKET_NAME?: string;
   SMTP_HOST?: string;
   SMTP_PORT?: string;
   SMTP_USERNAME?: string;
@@ -21,13 +27,16 @@ export interface Env {
   VAPID_SUBJECT?: string;
 }
 
-export interface AppUser {
+export interface AuthenticatedUser {
   id: string;
-  email: string;
   role: Role;
   disabled_at: string | null;
   password_changed_at: string | null;
   force_password_change_at: string | null;
+}
+
+export interface AppUser extends AuthenticatedUser {
+  email: string;
   display_name: string;
   handle: string;
   bio: string;

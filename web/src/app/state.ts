@@ -1,7 +1,7 @@
 // @ts-nocheck
 export const state = {
   me: null,
-  instance: { name: "QuietCollective", source_code_url: "", logo_url: "" },
+  instance: { name: "QuietCollective", site_url: "", source_code_url: "", logo_url: "" },
   members: [],
   membersLoaded: false,
   galleries: [],
@@ -36,7 +36,11 @@ export const NOTIFICATION_ACTIVE_WINDOW_MS = NOTIFICATION_RECENT_WINDOW_MS + NOT
 export const BROWSER_NOTIFICATIONS_KEY = "qc_browser_notifications";
 export const API_JSON_CACHE_PREFIX = "qc_api_cache:";
 export const API_JSON_CACHEABLE_PATHS = [
+  /^\/api\/auth\/me$/,
+  /^\/api\/members$/,
+  /^\/api\/users\/[^/?]+$/,
   /^\/api\/galleries(?:$|\/[^/?]+$)/,
+  /^\/api\/works\/[^/?]+\/comments$/,
   /^\/api\/activity$/,
   /^\/api\/notifications$/,
   /^\/api\/notifications\/poll(?:\?|$)/,
