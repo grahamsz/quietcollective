@@ -9,12 +9,19 @@ function standaloneMode() {
 
 function installButton() {
   if (standaloneMode()) return "";
-  return `<button class="sidebar-install-app install-button" type="button" data-install-app hidden aria-label="Install app" title="Install app"><span>${icon("download")}</span><strong>Install App</strong></button>`;
+  return `<button class="sidebar-install-app install-button is-install-hidden" type="button" data-install-app disabled aria-hidden="true" tabindex="-1" aria-label="Install app" title="Install app"><span>${icon("download")}</span><strong>Install App</strong></button>`;
+}
+
+function setInstallButtonVisible(control: HTMLButtonElement, visible: boolean) {
+  control.classList.toggle("is-install-hidden", !visible);
+  control.disabled = !visible;
+  control.setAttribute("aria-hidden", visible ? "false" : "true");
+  control.tabIndex = visible ? 0 : -1;
 }
 
 function updateInstallButtons() {
   document.querySelectorAll("[data-install-app]").forEach((control) => {
-    control.hidden = !deferredInstallPrompt || standaloneMode();
+    setInstallButtonVisible(control as HTMLButtonElement, !!deferredInstallPrompt && !standaloneMode());
   });
 }
 

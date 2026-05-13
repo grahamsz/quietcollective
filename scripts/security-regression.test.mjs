@@ -24,6 +24,7 @@ const mediaSource = readFileSync("worker/src/media.ts", "utf8");
 const mediaComponentSource = readFileSync("web/src/components/media.ts", "utf8");
 const reactionsSource = readFileSync("web/src/app/reactions.ts", "utf8");
 const workPrefetchSource = readFileSync("web/src/app/work-prefetch.ts", "utf8");
+const installSource = readFileSync("web/src/app/install.ts", "utf8");
 const workTileSource = readFileSync("web/src/components/work-tile.tsx", "utf8");
 const workViewSource = readFileSync("web/src/views/works.tsx", "utf8");
 const utilsSource = readFileSync("worker/src/utils.ts", "utf8");
@@ -796,6 +797,16 @@ test("human-readable API docs are published through worker routes", () => {
 
 test("PWA install icons use instance app icons when configured", () => {
   const index = readFileSync("public/index.html", "utf8");
+  assert.match(index, /fonts\.googleapis\.com/);
+  assert.match(index, /fonts\.gstatic\.com/);
+  assert.match(index, /family=Montserrat[\s\S]*family=Urbanist[\s\S]*display=swap/);
+  assert.match(index, /class="boot-screen initial-boot-screen"/);
+  assert.match(stylesSource, /\.initial-boot-screen[\s\S]*position: fixed[\s\S]*inset: 0/);
+  assert.match(stylesSource, /--font-sans: Montserrat/);
+  assert.match(stylesSource, /--font-display: Urbanist, Montserrat/);
+  assert.match(stylesSource, /\.sidebar-install-app\.is-install-hidden[\s\S]*visibility: hidden/);
+  assert.match(installSource, /class="sidebar-install-app install-button is-install-hidden"/);
+  assert.match(installSource, /setInstallButtonVisible\(control as HTMLButtonElement/);
   assert.match(index, /viewport-fit=cover/);
   assert.match(index, /rel="manifest" href="\/manifest\.webmanifest"/);
   assert.match(index, /rel="icon" href="\/favicon\.ico" type="image\/png" sizes="32x32"/);

@@ -22,9 +22,9 @@
   --shadow: 0 10px 26px rgba(0, 0, 0, 0.28);
   --radius: 4px;
   --sidebar: 244px;
-  font-family:
-    Montserrat, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI",
-    sans-serif;
+  --font-sans: Montserrat, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  --font-display: Urbanist, Montserrat, ui-sans-serif, system-ui, sans-serif;
+  font-family: var(--font-sans);
 }
 
 * {
@@ -132,6 +132,13 @@ img {
   gap: 14px;
   color: var(--muted);
   text-align: center;
+}
+
+.initial-boot-screen {
+  position: fixed;
+  z-index: 10;
+  inset: 0;
+  background: var(--paper);
 }
 
 .brand-mark {
@@ -661,7 +668,7 @@ h3,
 .brand-title strong,
 .card-title,
 .eyebrow {
-  font-family: Urbanist, Montserrat, ui-sans-serif, system-ui, sans-serif;
+  font-family: var(--font-display);
 }
 
 h1 {
@@ -2085,6 +2092,11 @@ body.media-lightbox-open {
   background: transparent;
   font-family: inherit;
   text-align: left;
+}
+
+.sidebar-install-app.is-install-hidden {
+  visibility: hidden;
+  pointer-events: none;
 }
 
 .sidebar-new-gallery {
