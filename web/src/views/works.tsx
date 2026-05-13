@@ -62,6 +62,7 @@ function userCredit(work) {
     kind: "uploader",
     label,
     href: handle ? `/members/${encodePath(handle)}` : "",
+    roles: [],
     title: `Uploaded by ${label}`,
   };
 }
@@ -76,24 +77,49 @@ function collaboratorCredit(collab) {
     kind: "contributor",
     label,
     href: handle ? `/members/${encodePath(handle)}` : "",
+    roles: [role || "contributor"],
     title: role ? `${label}, ${role}` : `${label}, contributor`,
+  };
+}
+
+function creditTitle(credit, roles) {
+  const normalizedRoles = roles.length ? roles : credit.kind === "uploader" ? ["uploader"] : ["contributor"];
+  if (credit.kind === "uploader") return `${credit.label}, ${["uploader", ...normalizedRoles].filter((role, index, all) => all.findIndex((value) => value.toLowerCase() === role.toLowerCase()) === index).join(", ")}`;
+  return `${credit.label}, ${normalizedRoles.join(", ")}`;
+}
+
+function mergeCreditRole(credit, role) {
+  const label = String(role || "").trim();
+  if (!label) return credit;
+  const roles = credit.roles || [];
+  if (roles.some((existing) => existing.toLowerCase() === label.toLowerCase())) return credit;
+  const mergedRoles = [...roles, label];
+  return {
+    ...credit,
+    roles: mergedRoles,
+    title: creditTitle(credit, mergedRoles),
   };
 }
 
 function workCredits(work, collaborators) {
   const credits = [];
-  const seen = new Set();
+  const seen = new Map();
   const uploader = userCredit(work);
   if (uploader) {
     credits.push(uploader);
-    seen.add(creditKey(uploader.label));
+    seen.set(creditKey(uploader.label), 0);
   }
   for (const collab of collaborators || []) {
     const credit = collaboratorCredit(collab);
     const key = creditKey(credit?.label);
-    if (!credit || !key || seen.has(key)) continue;
+    if (!credit || !key) continue;
+    if (seen.has(key)) {
+      const index = seen.get(key);
+      credits[index] = mergeCreditRole(credits[index], collab?.role_label || "contributor");
+      continue;
+    }
     credits.push(credit);
-    seen.add(key);
+    seen.set(key, credits.length - 1);
   }
   return credits;
 }
