@@ -3,6 +3,7 @@ import { mountComponentIslands } from "../components/islands";
 import { icon } from "../components/icons";
 import { bindProtectedMedia } from "../components/media";
 import { avatar, button, iconButton, link } from "../components/ui";
+import { galleryIsMine, galleryIsPublic } from "../lib/gallery-filters";
 import { encodePath, escapeHtml, newestFirst } from "../lib/utils";
 import { api } from "./api";
 import { enhanceMarkdownEditors } from "./forms";
@@ -33,12 +34,15 @@ function brandMark() {
   return `<div class="brand-mark" aria-hidden="true">QC</div>`;
 }
 
+function sidebarGalleryList(galleries) {
+  return `<div class="sidebar-gallery-list">${galleries.map((gallery) => `<a href="/galleries/${gallery.id}" data-link><span>${escapeHtml(gallery.title)}</span></a>`).join("")}</div>`;
+}
+
 /** Wraps authenticated page views with sidebar, topbar, and shared navigation. */
 function pageShell(content, options = {}) {
-  const myGalleries = state.galleries
-    .filter((gallery) => gallery.owner_user_id === state.me?.id || gallery.capabilities?.upload_work)
-    .sort(newestFirst)
-    .slice(0, 8);
+  const visibleGalleries = [...(state.galleries || [])].sort(newestFirst);
+  const publicGalleries = visibleGalleries.filter(galleryIsPublic).slice(0, 8);
+  const myGalleries = visibleGalleries.filter((gallery) => galleryIsMine(gallery, state.me?.id)).slice(0, 8);
   const popularTags = (state.popularTags || []).slice(0, 5);
   const forumBoards = (state.forumBoards || []).slice(0, 8);
   const source = state.instance.source_code_url
@@ -52,9 +56,13 @@ function pageShell(content, options = {}) {
       <aside class="sidebar">
         <a class="sidebar-head" href="/" data-link>${brandMark()}<div class="brand-title"><strong>${escapeHtml(state.instance.name || "QuietCollective")}</strong><span>Private artist community</span></div></a>
         <section class="sidebar-section sidebar-section-primary">
+          <h2>Public Galleries</h2>
+          ${publicGalleries.length ? sidebarGalleryList(publicGalleries) : `<div class="empty-state compact">No public galleries yet.</div>`}
+          <a href="/galleries" class="sidebar-view-all" ${location.pathname === "/galleries" && !location.search ? 'aria-current="page"' : ""} data-link>All Galleries</a>
+        </section>
+        <section class="sidebar-section sidebar-my-galleries">
           <h2>My Galleries</h2>
-          ${myGalleries.length ? `<div class="sidebar-gallery-list">${myGalleries.map((gallery) => `<a href="/galleries/${gallery.id}" data-link><span>${escapeHtml(gallery.title)}</span></a>`).join("")}</div>` : `<div class="empty-state compact">No galleries yet.</div>`}
-          <a href="/galleries" class="sidebar-view-all" data-link>View All</a>
+          ${myGalleries.length ? sidebarGalleryList(myGalleries) : `<div class="empty-state compact">No personal galleries yet.</div>`}
           <a href="/galleries/new" class="sidebar-new-gallery" data-link><span>${icon("plus")}</span><strong>New Gallery</strong></a>
         </section>
         <section class="sidebar-section sidebar-community">

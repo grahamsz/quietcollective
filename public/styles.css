@@ -707,6 +707,34 @@ h3 {
   gap: 8px;
 }
 
+.gallery-filter-tabs {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  padding: 3px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--panel-soft);
+}
+
+.gallery-filter-tabs a {
+  display: inline-flex;
+  align-items: center;
+  min-height: 30px;
+  padding: 0 10px;
+  border-radius: 5px;
+  color: var(--muted);
+  font-size: 0.82rem;
+  font-weight: 800;
+  text-decoration: none;
+}
+
+.gallery-filter-tabs a:hover,
+.gallery-filter-tabs a[aria-current="page"] {
+  background: var(--panel);
+  color: var(--ink);
+}
+
 .grid {
   display: grid;
   gap: 12px;
@@ -2071,6 +2099,10 @@ body.media-lightbox-open {
   padding-top: 10px;
 }
 
+.sidebar-my-galleries {
+  border-top: 1px solid var(--line);
+}
+
 .sidebar-new-gallery,
 .sidebar-new-board,
 .sidebar-install-app,
@@ -2207,6 +2239,7 @@ body.media-lightbox-open {
 .sidebar-new-board:hover,
 .sidebar-new-board[aria-current="page"],
 .sidebar-view-all:hover,
+.sidebar-view-all[aria-current="page"],
 .nav-link:hover,
 .nav-link[aria-current="page"] {
   background: #202020;

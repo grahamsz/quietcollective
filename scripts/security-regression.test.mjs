@@ -27,6 +27,7 @@ const workPrefetchSource = readFileSync("web/src/app/work-prefetch.ts", "utf8");
 const installSource = readFileSync("web/src/app/install.ts", "utf8");
 const workTileSource = readFileSync("web/src/components/work-tile.tsx", "utf8");
 const workViewSource = readFileSync("web/src/views/works.tsx", "utf8");
+const galleryFiltersSource = readFileSync("web/src/lib/gallery-filters.ts", "utf8");
 const forumPageSource = readFileSync("web/src/pages/forum.ts", "utf8");
 const utilsSource = readFileSync("worker/src/utils.ts", "utf8");
 const fontFacesSource = readFileSync("public/font-faces.css", "utf8");
@@ -777,6 +778,23 @@ test("collaborative gallery settings can add members", () => {
   assert.match(appSource, /\/api\/galleries\/\$\{encodePath\(id\)\}\/members/);
   assert.match(appSource, /bindMentionAutocomplete\(form\)/);
   assert.match(appSource, /input\[data-mention-input\]/);
+});
+
+test("gallery navigation separates all public and personal lists", () => {
+  assert.match(galleryFiltersSource, /export function galleryIsPublic/);
+  assert.match(galleryFiltersSource, /gallery\.visibility === "server_public"/);
+  assert.match(galleryFiltersSource, /gallery\.ownership_type === "whole_server"/);
+  assert.match(galleryFiltersSource, /export function galleryIsMine/);
+  assert.match(galleryFiltersSource, /gallery\.ownership_type === "collaborative"/);
+  assert.match(galleryFiltersSource, /gallery\.capabilities\?\.upload_work/);
+  assert.match(appSource, /Public Galleries/);
+  assert.match(appSource, /My Galleries/);
+  assert.match(appSource, /All Galleries/);
+  assert.match(appSource, /filterGalleries\(galleries, activeFilter, state\.me\?\.id\)/);
+  assert.match(homeViewSource, /gallery-filter-tabs/);
+  assert.match(homeViewSource, /\["all", "All", "\/galleries"\]/);
+  assert.match(homeViewSource, /\["public", "Public", "\/galleries\?view=public"\]/);
+  assert.match(homeViewSource, /\["my", "My", "\/galleries\?view=my"\]/);
 });
 
 test("admin role does not grant content visibility or mutation outside admin routes", () => {

@@ -1,6 +1,6 @@
-const CACHE_NAME = "quietcollective-shell-bf0e53fcfc3b";
-const STYLES_CSS_URL = "/styles.min.css?v=b8af802ba859";
-const APP_JS_URL = "/app.js?v=cdf05f7df369";
+const CACHE_NAME = "quietcollective-shell-c6fa0718675c";
+const STYLES_CSS_URL = "/styles.min.css?v=057c8fcbc47c";
+const APP_JS_URL = "/app.js?v=2655d23fb6a5";
 const NOTIFICATION_STATE_CACHE = "quietcollective-notification-state-v1";
 const NOTIFICATION_STATE_URL = "/__quietcollective_notification_state__";
 const NOTIFICATION_RECENT_POLL_INTERVAL_MS = 60 * 1000;

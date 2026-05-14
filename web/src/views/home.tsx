@@ -29,6 +29,19 @@ function Avatar({ user, className = "avatar" }) {
   return <span class={className} aria-hidden="true">{source.slice(0, 2).toUpperCase()}</span>;
 }
 
+function GalleryFilterTabs({ activeFilter = "all" }) {
+  const tabs = [
+    ["all", "All", "/galleries"],
+    ["public", "Public", "/galleries?view=public"],
+    ["my", "My", "/galleries?view=my"],
+  ];
+  return (
+    <nav class="gallery-filter-tabs" aria-label="Gallery filters">
+      {tabs.map(([id, label, href]) => <a href={href} aria-current={activeFilter === id ? "page" : undefined} data-link key={id}>{label}</a>)}
+    </nav>
+  );
+}
+
 function profileLinks(user) {
   return (user?.links || [])
     .map((link) => ({
@@ -59,7 +72,7 @@ export function HomeView({ instanceName, subtitle, galleries, works, activityEve
 }
 
 /** Renders the gallery index route at `/galleries`. */
-export function GalleriesIndexView({ galleries }) {
+export function GalleriesIndexView({ galleries, activeFilter = "all" }) {
   return (
     <section class="view gallery-view">
       <div class="view-header">
@@ -68,6 +81,7 @@ export function GalleriesIndexView({ galleries }) {
           <h1>Browse galleries</h1>
         </div>
         <div class="toolbar">
+          <GalleryFilterTabs activeFilter={activeFilter} />
           <a href="/galleries/new" class="button primary square-button" data-link aria-label="New gallery" title="New gallery"><Icon name="plus" /><span class="sr-only">New gallery</span></a>
         </div>
       </div>

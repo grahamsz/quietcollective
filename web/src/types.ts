@@ -26,6 +26,13 @@ export type Gallery = {
   cover_image_url?: string | null;
   work_count?: number | null;
   works_count?: number | null;
+  capabilities?: {
+    view?: boolean | number | null;
+    edit?: boolean | number | null;
+    upload_work?: boolean | number | null;
+    comment?: boolean | number | null;
+    manage_collaborators?: boolean | number | null;
+  } | null;
   ownership_summary?: GalleryOwnershipSummary | null;
   created_at?: string | null;
   updated_at?: string | null;

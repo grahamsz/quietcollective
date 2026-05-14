@@ -1,5 +1,5 @@
 // @ts-nocheck
-import { api, encodePath, ensureAuthed, loadForumBoards, loadGalleries, loadMembers, navigate, newestFirst, pageShell, setApp, state, syncBrowserNotifications, updateNotificationBell } from "../app/core";
+import { api, encodePath, ensureAuthed, filterGalleries, loadForumBoards, loadGalleries, loadMembers, navigate, newestFirst, normalizeGalleryFilter, pageShell, setApp, state, syncBrowserNotifications, updateNotificationBell } from "../app/core";
 import { bindCommentForm, highlightLinkedComment } from "../app/comments";
 import { galleriesIndexView, homeView, memberProfileView, membersIndexView, tagPageView } from "../views/islands";
 
@@ -46,7 +46,11 @@ async function renderHome() {
 async function renderGalleries() {
   if (!(await ensureAuthed())) return;
   const galleries = await loadGalleries();
-  setApp(pageShell(galleriesIndexView(galleries)));
+  const activeFilter = normalizeGalleryFilter(new URLSearchParams(location.search).get("view"));
+  setApp(pageShell(galleriesIndexView({
+    galleries: filterGalleries(galleries, activeFilter, state.me?.id),
+    activeFilter,
+  })));
 }
 
 async function renderMembers() {

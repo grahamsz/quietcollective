@@ -3,6 +3,7 @@ export * from "../components/icons";
 export * from "../components/islands";
 export * from "../components/media";
 export * from "../components/ui";
+export * from "../lib/gallery-filters";
 export * from "../lib/markdown";
 export * from "../lib/utils";
 export * from "./api";

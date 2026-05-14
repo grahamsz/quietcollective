@@ -69,8 +69,8 @@ export function homeView(props) {
 }
 
 /** Mounts the TSX gallery index route at `/galleries`. */
-export function galleriesIndexView(galleries) {
-  return islandPlaceholder("galleries-index-view", { galleries });
+export function galleriesIndexView(props) {
+  return islandPlaceholder("galleries-index-view", props);
 }
 
 /** Mounts the TSX member directory route at `/members`. */
