@@ -1124,25 +1124,39 @@ registerRoutes(app, {
   putR2File,
 });
 
-export default {
+async function workerFetch(request: Request, env: Env, ctx: ExecutionContext) {
+  const instrumented = instrumentD1Env(env);
+  const response = await app.fetch(request, instrumented.env, ctx);
+  return withD1MetricsHeaders(response, instrumented.metrics);
+}
+
+async function workerQueue(batch: MessageBatch<{ kind?: string; eventId?: string }>, env: Env) {
+  for (const message of batch.messages) {
+    if (message.body?.kind === "process_event" && message.body.eventId) {
+      await processEvent(env, message.body.eventId);
+    }
+    message.ack();
+  }
+}
+
+export async function runScheduledTasks(env: Env) {
+  await clearExpiredFeedbackRequests(env);
+  await rebuildTagIndex(env.DB);
+  await bumpCachedApiCacheToken(env).catch(() => undefined);
+}
+
+export const workerHandler = {
   async fetch(request: Request, env: Env, ctx: ExecutionContext) {
-    const instrumented = instrumentD1Env(env);
-    const response = await app.fetch(request, instrumented.env, ctx);
-    return withD1MetricsHeaders(response, instrumented.metrics);
+    return workerFetch(request, env, ctx);
   },
   async queue(batch: MessageBatch<{ kind?: string; eventId?: string }>, env: Env) {
-    for (const message of batch.messages) {
-      if (message.body?.kind === "process_event" && message.body.eventId) {
-        await processEvent(env, message.body.eventId);
-      }
-      message.ack();
-    }
+    await workerQueue(batch, env);
   },
   async scheduled(_event: ScheduledEvent, env: Env) {
-    await clearExpiredFeedbackRequests(env);
-    await rebuildTagIndex(env.DB);
-    await bumpCachedApiCacheToken(env).catch(() => undefined);
+    await runScheduledTasks(env);
   },
 };
 
+export default workerHandler;
+export { app };
 export { InstanceCacheObject } from "./instance-cache";

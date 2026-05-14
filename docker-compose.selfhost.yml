@@ -1,0 +1,18 @@
+services:
+  quietcollective:
+    build:
+      context: .
+      dockerfile: Dockerfile.selfhost
+    image: quietcollective:selfhost
+    ports:
+      - "8787:8787"
+    environment:
+      INSTANCE_NAME: QuietCollective
+      SITE_URL: http://localhost:8787
+      SOURCE_CODE_URL: ""
+    volumes:
+      - quietcollective-data:/data
+
+volumes:
+  quietcollective-data:
+

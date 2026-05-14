@@ -36,6 +36,35 @@ wrangler secret put ADMIN_SETUP_TOKEN
 
 Open `/setup` and use `ADMIN_SETUP_TOKEN` once. After the first admin exists, setup is disabled and normal registration remains invite-only.
 
+## Self-Hosted Docker Example
+
+The Cloudflare deployment remains the primary production target, but the repository also includes an optional Alpine-based self-host example. It runs the same Hono app through a Node server, stores relational data in SQLite, and stores uploaded media on the container volume filesystem.
+
+Build and run with Docker Compose:
+
+```bash
+docker compose -f docker-compose.selfhost.yml up --build
+```
+
+Or build and run the image directly:
+
+```bash
+docker build -f Dockerfile.selfhost -t quietcollective:selfhost .
+docker run --rm -p 8787:8787 -v quietcollective-data:/data quietcollective:selfhost
+```
+
+On first start, the self-host runtime creates `/data/quietcollective.sqlite`, applies `migrations/*.sql`, creates `/data/media`, and generates missing `JWT_SECRET` and `ADMIN_SETUP_TOKEN` values in `/data/generated.env`. The setup token is printed in the container logs; open `http://localhost:8787/setup` and use it to create the first admin.
+
+Runtime configuration should be supplied with environment variables, not baked into the image:
+
+- `INSTANCE_NAME`
+- `SITE_URL`
+- `SOURCE_CODE_URL`
+- SMTP settings (`SMTP_HOST`, `SMTP_PORT`, `SMTP_USERNAME`, `SMTP_PASSWORD`, `SMTP_FROM_EMAIL`, `SMTP_REPLY_TO`)
+- Web Push settings (`VAPID_PUBLIC_KEY`, `VAPID_PRIVATE_KEY`, `VAPID_SUBJECT`)
+
+The self-host path intentionally leaves Cloudflare-only bindings such as Durable Objects and direct R2 presigned media URLs out of the runtime. Media is served through the app's existing permission-checked routes.
+
 ## Cloudflare Deployment
 
 These instructions use the production resource names already referenced by `wrangler.jsonc`. Do not commit deployment domains, account-specific IDs, secrets, or private endpoint URLs to the repository; use an ignored config such as `wrangler.<instance>.jsonc` for instance-specific deployments.

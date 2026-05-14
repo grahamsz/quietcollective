@@ -1,0 +1,42 @@
+# syntax=docker/dockerfile:1
+
+FROM node:24-alpine AS build
+
+WORKDIR /app
+
+COPY package.json package-lock.json ./
+RUN npm ci
+
+COPY worker ./worker
+COPY web ./web
+COPY public ./public
+COPY scripts ./scripts
+COPY migrations ./migrations
+COPY selfhost ./selfhost
+
+RUN npm run selfhost:build
+
+FROM node:24-alpine AS runtime
+
+ENV NODE_ENV=production \
+    HOST=0.0.0.0 \
+    PORT=8787 \
+    QC_DATA_DIR=/data
+
+WORKDIR /app
+
+RUN addgroup -S quietcollective && adduser -S quietcollective -G quietcollective
+
+COPY --from=build /app/dist ./dist
+COPY --from=build /app/public ./public
+COPY --from=build /app/migrations ./migrations
+
+RUN mkdir -p /data/media && chown -R quietcollective:quietcollective /app /data
+
+USER quietcollective
+
+EXPOSE 8787
+VOLUME ["/data"]
+
+CMD ["node", "dist/selfhost/server.mjs"]
+
